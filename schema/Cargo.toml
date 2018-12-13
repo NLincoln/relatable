@@ -1,0 +1,8 @@
+[package]
+name = "schema"
+version = "0.1.0"
+authors = ["Nathan <nlincoln@intellifarms.com>"]
+edition = "2018"
+
+[dependencies]
+byteorder = "1.2"
