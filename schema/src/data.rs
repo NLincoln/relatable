@@ -1,4 +1,4 @@
-use crate::Schema;
+use crate::{Disk, Schema};
 use std::io::{self, Read, Seek, Write};
 
 pub struct Table {
@@ -6,25 +6,48 @@ pub struct Table {
   columns: Schema,
 }
 
-pub struct Database<T: Read + Write + Seek> {
+impl Table {
+  pub fn name(&self) -> &str {
+    &self.name
+  }
+  pub fn schema(&self) -> &Schema {
+    &self.columns
+  }
+  /*
+   * Format here goes:
+   * tablename_size(u16) tablename num_columns(u16) columns+
+   */
+  fn persist(&self, disk: &mut impl Write) -> io::Result<usize> {
+    unimplemented!()
+  }
+  fn from_persisted(disk: &mut impl Read) -> io::Result<Self> {
+    unimplemented!()
+  }
+}
+
+pub struct Database<T: Disk> {
   tables: Vec<Table>,
   data: T,
 }
 
-impl<T: Read + Write + Seek> Database<T> {
-  pub fn from_io(io: T) -> io::Result<Self> {
-    /*
-     * So we position our cursor at the start of the buffer.
-     * The question is how this starts. What do we read off first?
-     *
-     * I'm thinking that the file encoding should go something like the following:
-     *
-     * start: data_offset(u64) schema+
-     * schema: tablename_size(u16) + tablename(&str) + column_size(u32) + columns
-     *
-     * My main worry with this solution is that I'll spend a lot of time seeking around
-     * in the file. Maybe this isn't a big deal?
-     */
+impl<T: Disk> Database<T> {
+  /// Initializes a new database on the provided disk
+  /// There should be no information on the provided disk
+  pub fn new(disk: T) -> io::Result<Self> {
     unimplemented!()
+  }
+  pub fn from_disk(disk: T) -> io::Result<Self> {
+    unimplemented!()
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use std::io::Cursor;
+  #[test]
+  fn create_db() {
+    let mut disk = Cursor::new(vec![]);
+    let db = Database::new(&mut disk).unwrap();
   }
 }

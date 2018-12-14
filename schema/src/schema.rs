@@ -100,7 +100,7 @@ pub enum SchemaFromBytesError {
   /// An i/o error occurred
   Io(io::Error),
   /// An error occurred converting to utf8
-  FromUtf8Error(std::string::FromUtf8Error),
+  Utf8Error(std::string::FromUtf8Error),
 }
 
 impl From<io::Error> for SchemaFromBytesError {
@@ -111,7 +111,7 @@ impl From<io::Error> for SchemaFromBytesError {
 
 impl From<std::string::FromUtf8Error> for SchemaFromBytesError {
   fn from(err: std::string::FromUtf8Error) -> SchemaFromBytesError {
-    SchemaFromBytesError::FromUtf8Error(err)
+    SchemaFromBytesError::Utf8Error(err)
   }
 }
 
