@@ -24,28 +24,40 @@ pub enum BlockKind {
 /// in
 pub struct BlockMeta {
   kind: BlockKind,
-  /// The offset in the file this block appears at. Might not be needed
+  /// The offset in the file this block appears at. Isn't actually written to disk
   offset: u64,
+
   /// The offset of the next block.
   ///
   /// Reasons why this wouldn't exist:
   /// - This type of block never has additional blocks (e.g. the Root block)
   /// - This is the last block in the linked list
+  /// If this doesn't exist, it is all zeros.
   next_block: Option<u64>,
+
+  /// The total number of bytes that have been written to this block
+  size: u64,
 }
 
 impl BlockMeta {
+  pub fn kind(&self) -> BlockKind {
+    self.kind.clone()
+  }
+  pub fn offset(&self) -> u64 {
+    self.offset
+  }
   fn size_on_disk() -> usize {
-    // 1 byte for tag, 8 bytes for next block.
+    // 1 byte for tag, 8 bytes for next block, 8 bytes for size
     // Just gonna go ahead and say that this is always the case,
     // to avoid headaches
-    9
+    17
   }
   /// This will only write the block header.
   /// So i.e. only kind and next_block
   fn persist(&self, disk: &mut impl Write) -> io::Result<()> {
     disk.write_u8(self.kind.clone() as u8)?;
     disk.write_u64::<BigEndian>(self.next_block.unwrap_or(0))?;
+    disk.write_u64::<BigEndian>(self.size)?;
 
     Ok(())
   }
@@ -66,9 +78,11 @@ impl BlockMeta {
     } else {
       Some(next_block)
     };
+    let size = disk.read_u64::<BigEndian>()?;
     Ok(BlockMeta {
       kind,
       next_block,
+      size,
       offset,
     })
   }
@@ -97,12 +111,9 @@ impl Block {
   pub fn meta(&self) -> &BlockMeta {
     &self.meta
   }
+
   pub fn data(&self) -> &[u8] {
     &self.data
-  }
-
-  pub fn data_mut(&mut self) -> &mut [u8] {
-    &mut self.data
   }
 
   pub fn persist(&self, disk: &mut (impl Write + Seek)) -> io::Result<usize> {
@@ -124,15 +135,52 @@ impl Block {
     Ok(Block { data: buf, meta })
   }
 
+  pub fn writer<'a>(&'a mut self) -> BlockWriter<'a> {
+    BlockWriter { block: self }
+  }
+
   pub fn new(kind: BlockKind, offset: u64, blocksize: u64) -> Self {
     let meta = BlockMeta {
       kind,
       offset,
       next_block: None,
+      size: 0,
     };
     Self {
       meta,
       data: vec![0; blocksize as usize - BlockMeta::size_on_disk()],
     }
+  }
+}
+
+pub struct BlockWriter<'a> {
+  block: &'a mut Block,
+}
+
+impl<'a> io::Write for BlockWriter<'a> {
+  fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+    let how_much_space_is_left_in_this_buffer =
+      self.block.data.len() - self.block.meta.size as usize;
+    let how_many_bytes_will_we_write =
+      std::cmp::min(buf.len(), how_much_space_is_left_in_this_buffer);
+
+    let is_there_space_left = how_many_bytes_will_we_write == 0;
+    if !is_there_space_left {
+      return Err(io::Error::new(
+        io::ErrorKind::UnexpectedEof,
+        "Attempted to write too many bytes. Allocate a new buffer and try again",
+      ));
+    }
+
+    for i in 0..how_many_bytes_will_we_write {
+      let idx = self.block.meta.size + i as u64;
+      self.block.data[idx as usize] = buf[i];
+    }
+    self.block.meta.size += how_many_bytes_will_we_write as u64;
+    Ok(how_many_bytes_will_we_write)
+  }
+
+  fn flush(&mut self) -> io::Result<()> {
+    Ok(())
   }
 }

@@ -61,6 +61,10 @@ impl DatabaseMeta {
     }
   }
 
+  fn block_size(&self) -> u64 {
+    2u64.pow(self.block_size_exp as u32)
+  }
+
   fn persist(&self, disk: &mut (impl Write + Seek)) -> io::Result<()> {
     disk.seek(io::SeekFrom::Start(0))?;
     disk.write_u8(self.version)?;
@@ -89,6 +93,17 @@ impl<T: Disk> Database<T> {
   pub fn create_table(&mut self, schema: Schema) -> io::Result<()> {
     // Alright so the first thing we need to do is go find the
     // schema table and add this entry to it.
+    let schema_block_offset = self.meta.schema_block_offset;
+    self.disk.seek(io::SeekFrom::Start(schema_block_offset))?;
+
+    let alloc = super::disk::block_io::BlockDiskWriter::new(
+      self,
+      super::disk::block::Block::from_disk(
+        schema_block_offset,
+        self.meta.block_size(),
+        &mut self.disk,
+      )?,
+    );
 
     unimplemented!()
   }
@@ -112,5 +127,12 @@ impl<T: Disk> Database<T> {
     let meta = DatabaseMeta::from_disk(&mut disk)?;
 
     Ok(Database { disk, meta })
+  }
+}
+
+use super::disk::block_io::BlockAllocator;
+impl<T: Disk> BlockAllocator for Database<T> {
+  fn allocate_block(&mut self) -> io::Result<Block> {
+    unimplemented!()
   }
 }

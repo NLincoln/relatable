@@ -6,71 +6,57 @@ impl<T: Read + Write + Seek> Disk for T {}
 
 pub mod block;
 
-mod block_io {
-  use super::{block::Block, Disk};
-  use std::io;
+pub mod block_io {
+  use super::block::Block;
+  use std::io::{self, Read, Write};
 
-  pub trait BlockAllocator: Disk {
+  pub trait BlockAllocator: Read + Write {
     fn allocate_block(&mut self) -> io::Result<Block>;
   }
 
-  pub struct BlockWriter<'a, 'b> {
+  pub struct BlockDiskWriter<'a> {
     disk: &'a mut BlockAllocator,
-    start_block: &'b mut Block,
-    current_offset: u64,
+    current_block: Block,
   }
 
-  impl<'a, 'b> BlockWriter<'a, 'b> {
-    pub fn new(disk: &'a mut impl BlockAllocator, start_block: &'b mut Block) -> Self {
-      Self {
+  impl<'a> BlockDiskWriter<'a> {
+    pub fn new(disk: &'a mut impl BlockAllocator, start_block: Block) -> Self {
+      BlockDiskWriter {
         disk,
-        start_block,
-        current_offset: 0,
+        current_block: start_block,
       }
     }
   }
-  use std::io::SeekFrom;
-  impl<'a, 'b> io::Seek for BlockWriter<'a, 'b> {
-    fn seek(&mut self, pos: io::SeekFrom) -> io::Result<u64> {
-      let new_pos = match pos {
-        SeekFrom::Current(num) => self.current_offset + num as u64,
-        SeekFrom::Start(num) => num,
-        SeekFrom::End(num) => return Err(io::Error::new(io::ErrorKind::InvalidData, "Attempted to seek from the end of a BlockWriter. BlockWriters operate on a conceptually infinite amount of memory, so seeking from the end is impossible"))
-      };
-      // TODO :: Possibly need to allocate new blocks here.
-      self.current_offset = new_pos;
-      Ok(new_pos)
-    }
-  }
 
-  impl<'a, 'b> io::Write for BlockWriter<'a, 'b> {
+  impl<'a> io::Write for BlockDiskWriter<'a> {
     fn write(&mut self, mut buf: &[u8]) -> io::Result<usize> {
-      use std::cell::Cell;
-      // So the first step is to see if we have enough space in our
-      // current buf left to actually write all of this
-      let mut current_block = Cell::new(self.start_block);
-
-      loop {
-        let target_buf = current_block.get_mut().data_mut();
-        let num_bytes_that_can_fit_in_this_block = target_buf.len() - self.current_offset as usize;
-        let num_bytes_to_copy = std::cmp::min(num_bytes_that_can_fit_in_this_block, buf.len());
-        for i in 0..num_bytes_to_copy {
-          let offset = self.current_offset + i as u64;
-          target_buf[offset as usize] = buf[i];
+      let buf_len = buf.len();
+      /*
+       * So here's the plan of attack: Write to the block that we have. When we get back UnexpectedEof from it,
+       * we allocate a new block, set the old blocks next_block to this new block, then replace our start_block with this block
+       * and continue writing
+       */
+      while !buf.is_empty() {
+        let mut writer = self.current_block.writer();
+        match writer.write(buf) {
+          Ok(bytes_written) => {
+            buf = &buf[bytes_written..];
+          }
+          Err(ref err) if err.kind() == io::ErrorKind::UnexpectedEof => {
+            let mut new_block = self.disk.allocate_block()?;
+            new_block.set_block_kind(self.current_block.meta().kind());
+            self
+              .current_block
+              .set_next_block(Some(new_block.meta().offset()));
+            self.current_block = new_block;
+          }
+          other_error @ Err(_) => return other_error,
         }
-
-        self.current_offset += num_bytes_to_copy as u64;
-        buf = &buf[(self.current_offset as usize)..];
-        if buf.is_empty() {
-          break;
-        }
-        current_block.set(&mut self.disk.allocate_block()?);
       }
-
-      unimplemented!()
+      Ok(buf_len)
     }
     fn flush(&mut self) -> io::Result<()> {
-      unimplemented!()
+      Ok(())
     }
   }
 }
