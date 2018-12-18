@@ -12,6 +12,7 @@ pub struct Field {
 }
 
 impl Field {
+  /// Creates a new field with the given kind and name
   pub fn new(kind: FieldKind, name: String) -> Field {
     Field { kind, name }
   }
@@ -47,6 +48,9 @@ impl Field {
   }
 }
 
+/// The kind of a field.
+///
+/// Only numbers and blobs are allowed right now
 #[derive(Debug, PartialEq, Clone)]
 pub enum FieldKind {
   /// An integer
@@ -72,6 +76,7 @@ impl FieldKind {
       }
     }
   }
+
   /// The tuple is (num_bytes_we_read, Field)
   fn from_persisted(disk: &mut impl Read) -> Result<(usize, FieldKind), SchemaFromBytesError> {
     let tag = disk.read_u8()?;
@@ -87,12 +92,16 @@ impl FieldKind {
   }
 }
 
-/// A Schema schema.
+/// The schema for a given table.
 #[derive(Debug, PartialEq, Clone)]
 pub struct Schema {
   fields: Vec<Field>,
+  name: String,
 }
 
+/// A generic error for all errors that
+/// can happen when trying to read the schema back
+/// from the disk
 #[derive(Debug)]
 pub enum SchemaFromBytesError {
   /// We encountered a field with a tag we didn't recognize
@@ -116,15 +125,25 @@ impl From<std::string::FromUtf8Error> for SchemaFromBytesError {
 }
 
 impl Schema {
-  pub fn from_fields(fields: Vec<Field>) -> Self {
-    Self { fields }
+  /// Creates a new schema from a set of fields
+  pub fn from_fields(name: String, fields: Vec<Field>) -> Self {
+    Self { fields, name }
   }
+
+  pub fn name(&self) -> &str {
+    &self.name
+  }
+
+  /// Gets the fields of this schema
   pub fn fields(&self) -> &[Field] {
     &self.fields
   }
   /// Serialize this schema to a series of bytes that could be
   /// written to disk, or communicated over the network, or whatever.
   pub fn persist(&self, disk: &mut impl Write) -> io::Result<usize> {
+    let name = self.name.as_bytes();
+    disk.write_u16::<BigEndian>(name.len() as u16)?;
+    disk.write_all(name)?;
     disk.write_u16::<BigEndian>(self.fields().len() as u16)?;
     let mut count = 2;
 
@@ -134,7 +153,15 @@ impl Schema {
     Ok(count)
   }
 
+  /// Reads the schema information from the disk
+  ///
+  /// Note that the schema that is being read here _must_ have
+  /// been written by `persist`
   pub fn from_persisted(disk: &mut impl Read) -> Result<Self, SchemaFromBytesError> {
+    let name_len = disk.read_u16::<BigEndian>()?;
+    let mut buf = vec![0; name_len as usize];
+    disk.read_exact(&mut buf)?;
+    let name = String::from_utf8(buf)?;
     let mut fields = vec![];
     let num_fields = disk.read_u16::<BigEndian>()?;
 
@@ -142,7 +169,7 @@ impl Schema {
       let (_, field) = Field::from_persisted(disk)?;
       fields.push(field);
     }
-    Ok(Self { fields })
+    Ok(Self { fields, name })
   }
 }
 
@@ -183,6 +210,7 @@ mod tests {
   #[test]
   fn persist_schema_with_number() {
     let schema = Schema {
+      name: "foo".into(),
       fields: vec![Field::new(FieldKind::Number, "id".into())],
     };
     let mut disk = io::Cursor::new(vec![]);

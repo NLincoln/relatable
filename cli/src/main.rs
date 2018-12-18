@@ -24,11 +24,14 @@ fn main() -> Result<(), io::Error> {
       .write(true)
       .create(true)
       .open(filename)?;
-    Schema::from_fields(vec![
-      Field::new(FieldKind::Blob(80), "id".into()),
-      Field::new(FieldKind::Number, "num".into()),
-      Field::new(FieldKind::Blob(500), "store".into()),
-    ])
+    Schema::from_fields(
+      "the_name".into(),
+      vec![
+        Field::new(FieldKind::Blob(80), "id".into()),
+        Field::new(FieldKind::Number, "num".into()),
+        Field::new(FieldKind::Blob(500), "store".into()),
+      ],
+    )
     .persist(&mut file)?;
   }
 
