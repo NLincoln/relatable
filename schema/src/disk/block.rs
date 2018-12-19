@@ -99,6 +99,9 @@ pub struct Block {
 }
 
 impl Block {
+  fn space_available(&self) -> usize {
+    self.data.len() - self.meta.size as usize
+  }
   pub fn set_next_block(&mut self, next: Option<u64>) {
     self.meta.next_block = next;
   }
@@ -139,6 +142,13 @@ impl Block {
     BlockWriter { block: self }
   }
 
+  pub fn reader<'a>(&'a self) -> BlockReader<'a> {
+    BlockReader {
+      block: self,
+      current_offset: 0,
+    }
+  }
+
   pub fn new(kind: BlockKind, offset: u64, blocksize: u64) -> Self {
     let meta = BlockMeta {
       kind,
@@ -153,14 +163,47 @@ impl Block {
   }
 }
 
+pub struct BlockReader<'a> {
+  current_offset: usize,
+  block: &'a Block,
+}
+
+impl<'a> io::Read for BlockReader<'a> {
+  fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+    let how_many_bytes_are_left = self.block.data.len() - self.current_offset;
+    if how_many_bytes_are_left == 0 {
+      return Err(io::Error::new(
+        io::ErrorKind::UnexpectedEof,
+        "Attempt to read past the end of a block",
+      ));
+    }
+    let how_many_bytes_will_we_read = std::cmp::min(buf.len(), how_many_bytes_are_left);
+    for i in 0..how_many_bytes_will_we_read {
+      buf[i] = self.block.data[self.current_offset + i];
+    }
+    Ok(how_many_bytes_will_we_read)
+  }
+}
+
+impl<'a> io::Seek for BlockReader<'a> {
+  fn seek(&mut self, seek: io::SeekFrom) -> io::Result<u64> {
+    let next_offset = match seek {
+      io::SeekFrom::Start(offset) => offset as usize,
+      io::SeekFrom::Current(offset) => self.current_offset + offset as usize,
+      io::SeekFrom::End(offset) => self.block.data.len() - offset as usize,
+    };
+    self.current_offset = next_offset;
+    Ok(self.current_offset as u64)
+  }
+}
+
 pub struct BlockWriter<'a> {
   block: &'a mut Block,
 }
 
 impl<'a> io::Write for BlockWriter<'a> {
   fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-    let how_much_space_is_left_in_this_buffer =
-      self.block.data.len() - self.block.meta.size as usize;
+    let how_much_space_is_left_in_this_buffer = self.block.space_available();
     let how_many_bytes_will_we_write =
       std::cmp::min(buf.len(), how_much_space_is_left_in_this_buffer);
 

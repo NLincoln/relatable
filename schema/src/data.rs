@@ -1,31 +1,7 @@
-use crate::{Block, Disk, Schema};
+use crate::{schema, Block, Disk, Schema};
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use std::io::{self, Read, Seek, Write};
-
-pub struct Table {
-  name: String,
-  columns: Schema,
-}
-
-impl Table {
-  pub fn name(&self) -> &str {
-    &self.name
-  }
-  pub fn schema(&self) -> &Schema {
-    &self.columns
-  }
-  /*
-   * Format here goes:
-   * tablename_size(u16) tablename num_columns(u16) columns+
-   */
-  fn persist(&self, disk: &mut impl Write) -> io::Result<usize> {
-    unimplemented!()
-  }
-  fn from_persisted(disk: &mut impl Read) -> io::Result<Self> {
-    unimplemented!()
-  }
-}
 
 pub struct Database<T: Disk> {
   disk: T,
@@ -75,7 +51,7 @@ impl DatabaseMeta {
   }
 
   fn from_disk(disk: &mut (impl Read + Seek)) -> io::Result<DatabaseMeta> {
-    disk.seek(io::SeekFrom::Start(0));
+    disk.seek(io::SeekFrom::Start(0))?;
     let version = disk.read_u8()?;
     let block_size_exp = disk.read_u8()?;
     let num_allocated_blocks = disk.read_u64::<BigEndian>()?;
@@ -90,22 +66,32 @@ impl DatabaseMeta {
 }
 
 impl<T: Disk> Database<T> {
-  pub fn create_table(&mut self, schema: Schema) -> io::Result<()> {
+  pub fn create_table(&mut self, schema: Schema) -> Result<(), schema::SchemaFromBytesError> {
     // Alright so the first thing we need to do is go find the
     // schema table and add this entry to it.
     let schema_block_offset = self.meta.schema_block_offset;
     self.disk.seek(io::SeekFrom::Start(schema_block_offset))?;
+    let block = super::disk::block::Block::from_disk(
+      schema_block_offset,
+      self.meta.block_size(),
+      &mut self.disk,
+    )?;
+    let mut existing_schema = {
+      let mut reader = super::disk::block_io::BlockDiskReader::new(self, block);
+      Schema::read_tables(&mut reader)?
+    };
+    existing_schema.push(schema);
 
-    let alloc = super::disk::block_io::BlockDiskWriter::new(
-      self,
-      super::disk::block::Block::from_disk(
-        schema_block_offset,
-        self.meta.block_size(),
-        &mut self.disk,
-      )?,
-    );
+    let block = super::disk::block::Block::from_disk(
+      schema_block_offset,
+      self.meta.block_size(),
+      &mut self.disk,
+    )?;
 
-    unimplemented!()
+    let mut writer = super::disk::block_io::BlockDiskWriter::new(self, block);
+    Schema::write_tables(&existing_schema, &mut writer)?;
+
+    Ok(())
   }
   /// Initializes a new database on the provided disk
   /// There should be no information on the provided disk
@@ -133,6 +119,9 @@ impl<T: Disk> Database<T> {
 use super::disk::block_io::BlockAllocator;
 impl<T: Disk> BlockAllocator for Database<T> {
   fn allocate_block(&mut self) -> io::Result<Block> {
+    unimplemented!()
+  }
+  fn read_block(&mut self, offset: u64) -> io::Result<Block> {
     unimplemented!()
   }
 }

@@ -138,6 +138,25 @@ impl Schema {
   pub fn fields(&self) -> &[Field] {
     &self.fields
   }
+
+  pub fn write_tables(tables: &[Schema], disk: &mut impl Write) -> io::Result<()> {
+    disk.write_u16::<BigEndian>(tables.len() as u16)?;
+    for table in tables {
+      table.persist(disk)?;
+    }
+    Ok(())
+  }
+
+  pub fn read_tables(disk: &mut impl Read) -> Result<Vec<Self>, SchemaFromBytesError> {
+    let num_tables = disk.read_u16::<BigEndian>()?;
+    let mut buf = Vec::with_capacity(num_tables as usize);
+
+    for _ in 0..num_tables {
+      buf.push(Schema::from_persisted(disk)?);
+    }
+    Ok(buf)
+  }
+
   /// Serialize this schema to a series of bytes that could be
   /// written to disk, or communicated over the network, or whatever.
   pub fn persist(&self, disk: &mut impl Write) -> io::Result<usize> {

@@ -8,5 +8,5 @@ use self::disk::{
   Disk,
 };
 
-pub use self::data::{Database, Table};
+pub use self::data::Database;
 pub use self::schema::{Field, FieldKind, Schema, SchemaFromBytesError};
