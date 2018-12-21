@@ -1,4 +1,4 @@
-use crate::{schema, Block, Disk, Schema};
+use crate::{schema, Block, BlockKind, Disk, Schema};
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use std::io::{self, Read, Seek, Write};
@@ -77,7 +77,7 @@ impl<T: Disk> Database<T> {
       &mut self.disk,
     )?;
     let mut existing_schema = {
-      let mut reader = super::disk::block_io::BlockDiskReader::new(self, block);
+      let mut reader = super::disk::BlockDisk::new(self, block)?;
       Schema::read_tables(&mut reader)?
     };
     existing_schema.push(schema);
@@ -88,7 +88,7 @@ impl<T: Disk> Database<T> {
       &mut self.disk,
     )?;
 
-    let mut writer = super::disk::block_io::BlockDiskWriter::new(self, block);
+    let mut writer = super::disk::BlockDisk::new(self, block)?;
     Schema::write_tables(&existing_schema, &mut writer)?;
 
     Ok(())
@@ -116,12 +116,39 @@ impl<T: Disk> Database<T> {
   }
 }
 
-use super::disk::block_io::BlockAllocator;
+use super::disk::BlockAllocator;
+
+impl<T: Disk> io::Write for Database<T> {
+  fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+    self.disk.write(buf)
+  }
+  fn flush(&mut self) -> io::Result<()> {
+    self.disk.flush()
+  }
+}
+
+impl<T: Disk> io::Read for Database<T> {
+  fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+    self.disk.read(buf)
+  }
+}
+
+impl<T: Disk> io::Seek for Database<T> {
+  fn seek(&mut self, pos: io::SeekFrom) -> io::Result<u64> {
+    self.disk.seek(pos)
+  }
+}
 impl<T: Disk> BlockAllocator for Database<T> {
   fn allocate_block(&mut self) -> io::Result<Block> {
-    unimplemented!()
+    let next_block_offset = self.meta.num_allocated_blocks * self.meta.block_size();
+    self.disk.seek(io::SeekFrom::Start(next_block_offset))?;
+    let block = Block::new(BlockKind::Record, next_block_offset, self.meta.block_size());
+    self.meta.num_allocated_blocks += 1;
+    self.meta.persist(&mut self.disk)?;
+    block.persist(&mut self.disk)?;
+    Ok(block)
   }
   fn read_block(&mut self, offset: u64) -> io::Result<Block> {
-    unimplemented!()
+    Block::from_disk(offset, self.meta.block_size(), &mut self.disk)
   }
 }
