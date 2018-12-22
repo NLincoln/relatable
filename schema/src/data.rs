@@ -3,12 +3,14 @@ use crate::{schema, Block, BlockKind, Disk, Schema};
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use std::io::{self, Read, Seek, Write};
 
+#[derive(Debug)]
 pub struct Database<T: Disk> {
   disk: T,
   meta: DatabaseMeta,
 }
 
 /// Basically a structure that holds all the information in the root block
+#[derive(Debug)]
 struct DatabaseMeta {
   /// The version of this database. Should be 1
   version: u8,
@@ -41,7 +43,7 @@ impl DatabaseMeta {
     2u64.pow(self.block_size_exp as u32)
   }
 
-  fn persist(&self, disk: &mut (impl Write + Seek)) -> io::Result<()> {
+  fn persist<D: Write + Seek>(&self, disk: &mut D) -> io::Result<()> {
     disk.seek(io::SeekFrom::Start(0))?;
     disk.write_u8(self.version)?;
     disk.write_u8(self.block_size_exp)?;
@@ -50,7 +52,7 @@ impl DatabaseMeta {
     Ok(())
   }
 
-  fn from_disk(disk: &mut (impl Read + Seek)) -> io::Result<DatabaseMeta> {
+  fn from_disk<D: Read + Seek>(disk: &mut D) -> io::Result<DatabaseMeta> {
     disk.seek(io::SeekFrom::Start(0))?;
     let version = disk.read_u8()?;
     let block_size_exp = disk.read_u8()?;
@@ -81,6 +83,7 @@ impl<T: Disk> Database<T> {
       Schema::read_tables(&mut reader)?
     };
     existing_schema.push(schema);
+    self.disk.seek(io::SeekFrom::Start(schema_block_offset))?;
 
     let block = super::disk::block::Block::from_disk(
       schema_block_offset,
@@ -93,6 +96,18 @@ impl<T: Disk> Database<T> {
 
     Ok(())
   }
+  pub fn schema(&mut self) -> Result<Vec<Schema>, schema::SchemaFromBytesError> {
+    let schema_block_offset = self.meta.schema_block_offset;
+    self.disk.seek(io::SeekFrom::Start(schema_block_offset))?;
+    let block = super::disk::block::Block::from_disk(
+      schema_block_offset,
+      self.meta.block_size(),
+      &mut self.disk,
+    )?;
+    let mut reader = super::disk::BlockDisk::new(self, block)?;
+    Schema::read_tables(&mut reader)
+  }
+
   /// Initializes a new database on the provided disk
   /// There should be no information on the provided disk
   pub fn new(mut disk: T) -> io::Result<Self> {

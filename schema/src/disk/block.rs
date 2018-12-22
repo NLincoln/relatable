@@ -41,9 +41,6 @@ pub struct BlockMeta {
 }
 
 impl BlockMeta {
-  pub fn kind(&self) -> BlockKind {
-    self.kind.clone()
-  }
   pub fn offset(&self) -> u64 {
     self.offset
   }
@@ -103,17 +100,8 @@ pub struct Block {
 }
 
 impl Block {
-  fn space_available(&self) -> usize {
-    self.data.len() - self.meta.size as usize
-  }
   pub fn set_next_block(&mut self, next: Option<u64>) {
     self.meta.next_block = next;
-  }
-  pub fn set_block_kind(&mut self, kind: BlockKind) {
-    if kind == BlockKind::Root {
-      self.meta.next_block = None;
-    }
-    self.meta.kind = kind;
   }
   pub fn meta(&self) -> &BlockMeta {
     &self.meta
