@@ -212,6 +212,7 @@ impl<'a> io::Write for BlockDiskView<'a> {
         return Ok(i);
       }
       self.block.data[offset] = buf[i];
+      self.block.meta.size += 1;
       self.current_offset += 1;
     }
     Ok(buf.len())
