@@ -112,14 +112,16 @@ impl<T: Disk> Database<T> {
   /// There should be no information on the provided disk
   pub fn new(mut disk: T) -> io::Result<Self> {
     use crate::BlockKind;
+    // version 1, block size of 2048
+    let block_size_exp = 6 as u8;
+    let block_size = 2u64.pow(block_size_exp as u32);
     // create a new root block
-    let root_block = Block::new(BlockKind::Root, 0, crate::BLOCK_SIZE);
+    let root_block = Block::new(BlockKind::Root, 0, block_size);
     root_block.persist(&mut disk)?;
 
-    let schema_block = Block::new(BlockKind::Schema, crate::BLOCK_SIZE, crate::BLOCK_SIZE);
+    let schema_block = Block::new(BlockKind::Schema, block_size, block_size);
     schema_block.persist(&mut disk)?;
-    // version 1, block size of 2048
-    let meta = DatabaseMeta::new(1, 11);
+    let meta = DatabaseMeta::new(1, block_size_exp);
     meta.persist(&mut disk)?;
     Ok(Database { disk, meta })
   }
@@ -153,6 +155,7 @@ impl<T: Disk> io::Seek for Database<T> {
     self.disk.seek(pos)
   }
 }
+
 impl<T: Disk> BlockAllocator for Database<T> {
   fn allocate_block(&mut self) -> io::Result<Block> {
     let next_block_offset = self.meta.num_allocated_blocks * self.meta.block_size();
@@ -166,4 +169,26 @@ impl<T: Disk> BlockAllocator for Database<T> {
   fn read_block(&mut self, offset: u64) -> io::Result<Block> {
     Block::from_disk(offset, self.meta.block_size(), &mut self.disk)
   }
+}
+
+#[test]
+fn test_writing_multiple_blocks() {
+  use crate::schema::{Field, FieldKind};
+  let mut database = Database::new(io::Cursor::new(vec![])).unwrap();
+  let schema = Schema::from_fields(
+    "the_name".into(),
+    vec![
+      Field::new(FieldKind::Blob(10), "id".into()),
+      Field::new(FieldKind::Blob(10), "id2".into()),
+      Field::new(FieldKind::Blob(10), "id3".into()),
+      Field::new(FieldKind::Blob(10), "id4".into()),
+      Field::new(FieldKind::Blob(10), "id5".into()),
+    ],
+  );
+  database.create_table(schema.clone()).unwrap();
+  database.create_table(schema.clone()).unwrap();
+  println!("{:?}", database.disk);
+  let actual_tables = database.schema().unwrap();
+  let expected_tables = vec![schema.clone(), schema.clone()];
+  assert_eq!(actual_tables, expected_tables);
 }

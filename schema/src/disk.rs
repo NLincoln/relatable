@@ -77,6 +77,7 @@ impl<'a, D: BlockAllocator> io::Read for BlockDisk<'a, D> {
 
     let mut current_block = {
       let idx = self.current_block_idx() as usize;
+      self.ensure_num_blocks(idx + 1)?;
       &mut self.blocks[idx]
     };
 
@@ -91,7 +92,7 @@ impl<'a, D: BlockAllocator> io::Read for BlockDisk<'a, D> {
         Err(ref err) if err.kind() == io::ErrorKind::UnexpectedEof => {
           current_block = {
             let idx = self.current_block_idx() as usize;
-            self.ensure_num_blocks(idx)?;
+            self.ensure_num_blocks(idx + 1)?;
             &mut self.blocks[idx]
           };
         }
@@ -115,6 +116,7 @@ impl<'a, D: BlockAllocator> io::Write for BlockDisk<'a, D> {
 
     let mut current_block = {
       let idx = self.current_block_idx() as usize;
+      self.ensure_num_blocks(idx + 1)?;
       &mut self.blocks[idx]
     };
 
@@ -188,64 +190,12 @@ impl<'a, D: BlockAllocator> io::Seek for BlockDisk<'a, D> {
 
 #[cfg(test)]
 mod tests {
-  use super::block::Block;
-  use super::BlockAllocator;
   use super::*;
-  use std::io::{Read, Seek, Write};
-  const BLOCK_SIZE: u64 = 32;
-
-  #[derive(Debug)]
-  struct InMemoryDatabase {
-    blocks_allocated: u64,
-    disk: io::Cursor<Vec<u8>>,
-  }
-  impl io::Write for InMemoryDatabase {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-      self.disk.write(buf)
-    }
-    fn flush(&mut self) -> io::Result<()> {
-      self.disk.flush()
-    }
-  }
-
-  impl io::Read for InMemoryDatabase {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-      self.disk.read(buf)
-    }
-  }
-
-  impl io::Seek for InMemoryDatabase {
-    fn seek(&mut self, pos: io::SeekFrom) -> io::Result<u64> {
-      self.disk.seek(pos)
-    }
-  }
-
-  impl BlockAllocator for InMemoryDatabase {
-    fn read_block(&mut self, offset: u64) -> io::Result<Block> {
-      self.disk.seek(io::SeekFrom::Start(offset))?;
-
-      Block::from_disk(offset, BLOCK_SIZE, &mut self.disk)
-    }
-    fn allocate_block(&mut self) -> io::Result<Block> {
-      let next_block_offset = BLOCK_SIZE * self.blocks_allocated;
-      self.disk.seek(io::SeekFrom::Start(next_block_offset))?;
-      let block = Block::new(
-        super::block::BlockKind::Record,
-        next_block_offset,
-        BLOCK_SIZE,
-      );
-      block.persist(&mut self.disk)?;
-      self.blocks_allocated += 1;
-      Ok(block)
-    }
-  }
-
+  use crate::memorydb::InMemoryDatabase;
+  use std::io;
   #[test]
   fn test_blockdisk_io() -> io::Result<()> {
-    let mut db = InMemoryDatabase {
-      blocks_allocated: 0,
-      disk: std::io::Cursor::new(vec![0; 128]),
-    };
+    let mut db = InMemoryDatabase::new(io::Cursor::new(vec![0; 128]));
 
     let block = BlockAllocator::allocate_block(&mut db)?;
     let mut blockdisk = BlockDisk::new(&mut db, block)?;

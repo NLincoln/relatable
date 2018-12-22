@@ -28,9 +28,11 @@ fn main() -> Result<(), io::Error> {
       .create_table(Schema::from_fields(
         "the_name".into(),
         vec![
-          Field::new(FieldKind::Blob(80), "id".into()),
-          Field::new(FieldKind::Number, "num".into()),
-          Field::new(FieldKind::Blob(500), "store".into()),
+          Field::new(FieldKind::Blob(10), "id".into()),
+          Field::new(FieldKind::Blob(10), "id2".into()),
+          Field::new(FieldKind::Blob(10), "id3".into()),
+          Field::new(FieldKind::Blob(10), "id4".into()),
+          Field::new(FieldKind::Blob(10), "id5".into()),
         ],
       ))
       .expect("Error creating table");
@@ -44,6 +46,10 @@ fn main() -> Result<(), io::Error> {
       .open(filename)?;
     let database = schema::Database::new(&mut file)?;
     println!("Successfully created database");
+    println!("{:?}", database);
+  } else if op == "dbmeta" {
+    let mut file = fs::OpenOptions::new().read(true).open(filename)?;
+    let database = schema::Database::from_disk(&mut file)?;
     println!("{:?}", database);
   }
 

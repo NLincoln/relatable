@@ -1,8 +1,10 @@
 //! Schema definition and data storage
 mod data;
 mod disk;
+#[cfg(test)]
+mod memorydb;
 mod schema;
-const BLOCK_SIZE: u64 = 2048;
+
 use self::disk::{
   block::{Block, BlockKind},
   Disk,
