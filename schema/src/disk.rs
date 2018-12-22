@@ -119,7 +119,11 @@ impl<'a, D: BlockAllocator> io::Write for BlockDisk<'a, D> {
     };
 
     while !buf.is_empty() {
-      let mut disk = current_block.disk(self.current_offset % block_size);
+      // two lines are related: Since we always insert `block_size` at a time,
+      // this modulo should always be true
+      debug_assert!(self.current_offset % block_size == 0);
+      let mut disk = current_block.disk(0);
+
       let bytes_written = self.current_offset - start_offset;
       match disk.write(buf) {
         Ok(bytes_written) => {
@@ -135,13 +139,9 @@ impl<'a, D: BlockAllocator> io::Write for BlockDisk<'a, D> {
           }
         }
         Err(ref err) if err.kind() == io::ErrorKind::UnexpectedEof => {
-          current_block.persist(&mut self.disk)?;
-
-          current_block = {
-            let idx = self.current_block_idx() as usize;
-            self.ensure_num_blocks(idx + 1)?;
-            &mut self.blocks[idx]
-          };
+          // We will always be able to write an entire blocks worth of bytes. Unless the buf is empty.
+          // if the buf is empty we return tho
+          unreachable!();
         }
         err @ Err(_) => {
           if bytes_written == 0 {
