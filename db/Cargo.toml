@@ -1,0 +1,11 @@
+[package]
+name = "db"
+version = "0.1.0"
+authors = ["Nathan <nlincoln@intellifarms.com>"]
+edition = "2018"
+
+[dependencies]
+schema = { path = "../schema" }
+byteorder = "1.2"
+env_logger = "0.6"
+log = "0.4"
