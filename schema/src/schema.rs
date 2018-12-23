@@ -13,10 +13,10 @@ pub struct Field {
 
 impl Field {
   /// Creates a new field with the given kind and name
-  pub fn new(kind: FieldKind, name: String) -> Result<Field, SchemaError> {
+  pub fn new(kind: FieldKind, name: String) -> Result<Field, FieldError> {
     if let FieldKind::Number(n) = kind {
       if n.count_ones() != 1 || n > 8 {
-        return Err(SchemaError::InvalidFieldConfig);
+        return Err(FieldError::InvalidNumberType(n));
       }
     }
 
@@ -52,6 +52,12 @@ impl Field {
       },
     ))
   }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum FieldError {
+  /// Invalid numeric type, returns the number requested
+  InvalidNumberType(u8),
 }
 
 /// The kind of a field.
@@ -136,7 +142,7 @@ pub enum SchemaError {
   /// An error occurred converting to utf8
   Utf8Error(std::string::FromUtf8Error),
   /// A column was created that had an invalid data type
-  InvalidFieldConfig,
+  FieldError(FieldError),
 }
 
 impl From<io::Error> for SchemaError {
@@ -148,6 +154,12 @@ impl From<io::Error> for SchemaError {
 impl From<std::string::FromUtf8Error> for SchemaError {
   fn from(err: std::string::FromUtf8Error) -> SchemaError {
     SchemaError::Utf8Error(err)
+  }
+}
+
+impl From<FieldError> for SchemaError {
+  fn from(err: FieldError) -> SchemaError {
+    SchemaError::FieldError(err)
   }
 }
 
@@ -256,15 +268,9 @@ mod tests {
   #[test]
   fn number_type_constraints() {
     let field = Field::new(FieldKind::Number(7), "id".into()).unwrap_err();
-    match field {
-      SchemaError::InvalidFieldConfig => {}
-      _ => panic!("Failing Test"),
-    };
+    assert_eq!(field, FieldError::InvalidNumberType(7));
     let field = Field::new(FieldKind::Number(16), "id".into()).unwrap_err();
-    match field {
-      SchemaError::InvalidFieldConfig => {}
-      _ => panic!("Failing Test"),
-    };
+    assert_eq!(field, FieldError::InvalidNumberType(16));
   }
 
   #[test]
