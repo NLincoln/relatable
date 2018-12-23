@@ -30,6 +30,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 name = "cli"
 version = "0.1.0"
 dependencies = [
+ "db 0.1.0",
+ "env_logger 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "log 0.4.6 (registry+https://github.com/rust-lang/crates.io-index)",
+ "schema 0.1.0",
+]
+
+[[package]]
+name = "db"
+version = "0.1.0"
+dependencies = [
+ "byteorder 1.2.7 (registry+https://github.com/rust-lang/crates.io-index)",
  "env_logger 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "log 0.4.6 (registry+https://github.com/rust-lang/crates.io-index)",
  "schema 0.1.0",

@@ -1,2 +1,2 @@
 [workspace]
-members = ["schema", "cli"]
+members = ["schema", "cli", "db"]

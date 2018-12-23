@@ -1,6 +1,6 @@
-use std::{env, fs, io};
-
+use db::Database;
 use schema::{Field, FieldKind, Schema};
+use std::{env, fs, io};
 
 fn main() -> Result<(), io::Error> {
   env_logger::init();
@@ -12,7 +12,7 @@ fn main() -> Result<(), io::Error> {
   let filename = &args[2];
   if op == "read" {
     let mut file = fs::OpenOptions::new().read(true).open(filename)?;
-    let mut database = schema::Database::from_disk(&mut file)?;
+    let mut database = Database::from_disk(&mut file)?;
     let schema = database.schema().unwrap();
     println!("Current Schema");
 
@@ -24,7 +24,7 @@ fn main() -> Result<(), io::Error> {
       .truncate(false)
       .open(filename)?;
 
-    let mut database = schema::Database::from_disk(&mut file)?;
+    let mut database = Database::from_disk(&mut file)?;
     database
       .create_table(Schema::from_fields(
         "the_name".into(),
@@ -45,12 +45,12 @@ fn main() -> Result<(), io::Error> {
       .truncate(true)
       .create_new(true)
       .open(filename)?;
-    let database = schema::Database::new(&mut file)?;
+    let database = Database::new(&mut file)?;
     println!("Successfully created database");
     println!("{:?}", database);
   } else if op == "dbmeta" {
     let mut file = fs::OpenOptions::new().read(true).open(filename)?;
-    let database = schema::Database::from_disk(&mut file)?;
+    let database = Database::from_disk(&mut file)?;
     println!("{:?}", database);
   }
 

@@ -5,6 +5,7 @@ authors = ["Nathan <nlincoln@intellifarms.com>"]
 edition = "2018"
 
 [dependencies]
+db = { path = "../db" }
 schema = { path = "../schema" }
 log = "0.4"
 env_logger = "0.6"
