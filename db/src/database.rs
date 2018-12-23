@@ -1,6 +1,6 @@
 use crate::{Block, BlockDisk};
 use log::debug;
-use schema::{Schema, SchemaFromBytesError};
+use schema::Schema;
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use std::io::{self, Read, Seek, Write};
@@ -74,7 +74,7 @@ impl DatabaseMeta {
 }
 
 impl<T: Disk> Database<T> {
-  pub fn create_table(&mut self, schema: Schema) -> Result<(), schema::SchemaFromBytesError> {
+  pub fn create_table(&mut self, schema: Schema) -> Result<(), schema::SchemaError> {
     // Alright so the first thing we need to do is go find the
     // schema table and add this entry to it.
     debug!("Creating Table");
@@ -101,7 +101,7 @@ impl<T: Disk> Database<T> {
 
     Ok(())
   }
-  pub fn schema(&mut self) -> Result<Vec<Schema>, schema::SchemaFromBytesError> {
+  pub fn schema(&mut self) -> Result<Vec<Schema>, schema::SchemaError> {
     let schema_block_offset = self.meta.schema_block_offset;
     self.disk.seek(io::SeekFrom::Start(schema_block_offset))?;
     let block =
@@ -173,30 +173,36 @@ impl<T: Disk> BlockAllocator for Database<T> {
   }
 }
 
-#[test]
-fn test_adding_a_bunch_of_tables() -> Result<(), SchemaFromBytesError> {
-  env_logger::init();
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use schema::SchemaError;
+  #[test]
+  fn test_adding_a_bunch_of_tables() -> Result<(), SchemaError> {
+    env_logger::init();
 
-  use schema::{Field, FieldKind};
-  let mut database = Database::new(io::Cursor::new(vec![]))?;
-  let schema = Schema::from_fields(
-    "the_name".into(),
-    vec![
-      Field::new(FieldKind::Blob(10), "id".into()),
-      Field::new(FieldKind::Blob(10), "id2".into()),
-      Field::new(FieldKind::Blob(10), "id3".into()),
-      Field::new(FieldKind::Blob(10), "id4".into()),
-      Field::new(FieldKind::Blob(10), "id5".into()),
-    ],
-  );
-  let mut expected_tables = vec![];
+    use schema::{Field, FieldKind};
+    let mut database = Database::new(io::Cursor::new(vec![]))?;
+    let schema = Schema::from_fields(
+      "the_name".into(),
+      vec![
+        Field::new(FieldKind::Blob(10), "id".into())?,
+        Field::new(FieldKind::Blob(10), "id2".into())?,
+        Field::new(FieldKind::Blob(10), "id3".into())?,
+        Field::new(FieldKind::Blob(10), "id4".into())?,
+        Field::new(FieldKind::Blob(10), "id5".into())?,
+      ],
+    );
+    let mut expected_tables = vec![];
 
-  for _ in 0..100 {
-    // at each iteration, add the table again. Then re-read the tables.
-    // they should match
-    database.create_table(schema.clone())?;
-    expected_tables.push(schema.clone());
-    assert_eq!(database.schema()?, expected_tables);
+    for _ in 0..100 {
+      // at each iteration, add the table again. Then re-read the tables.
+      // they should match
+      database.create_table(schema.clone())?;
+      expected_tables.push(schema.clone());
+      assert_eq!(database.schema()?, expected_tables);
+    }
+    Ok(())
   }
-  Ok(())
+
 }

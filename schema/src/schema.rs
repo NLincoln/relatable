@@ -13,11 +13,17 @@ pub struct Field {
 
 impl Field {
   /// Creates a new field with the given kind and name
-  pub fn new(kind: FieldKind, name: String) -> Field {
-    Field { kind, name }
+  pub fn new(kind: FieldKind, name: String) -> Result<Field, SchemaError> {
+    if let FieldKind::Number(n) = kind {
+      if n.count_ones() != 1 || n > 8 {
+        return Err(SchemaError::InvalidFieldConfig);
+      }
+    }
+
+    Ok(Field { kind, name })
   }
 
-  fn persist(&self, disk: &mut impl Write) -> io::Result<usize> {
+  fn persist(&self, disk: &mut impl Write) -> Result<usize, SchemaError> {
     /*
      * Format is:
      * name_len(u16) name kind
@@ -32,7 +38,7 @@ impl Field {
     Ok(2 + name_buf.len() + kind_len)
   }
   /// Returns (num bytes read, Field)
-  fn from_persisted(disk: &mut impl Read) -> Result<(usize, Field), SchemaFromBytesError> {
+  fn from_persisted(disk: &mut impl Read) -> Result<(usize, Field), SchemaError> {
     let name_len = disk.read_u16::<BigEndian>()?;
 
     let mut name = vec![0; name_len as usize];
@@ -49,28 +55,40 @@ impl Field {
 }
 
 /// The kind of a field.
-///
-/// Only numbers and blobs are allowed right now
 #[derive(Debug, PartialEq, Clone)]
 pub enum FieldKind {
-  /// An integer
-  Number,
+  /// An integer with n bytes of storage.
+  ///
+  /// n must be a power of two, and has a maximum of 8 (64-bit)
+  Number(u8),
   /// A blob of bytes, with the specified size
   Blob(u64),
+
+  /// A string with the specified number of bytes allocated to it.
+  ///
+  /// Keep in mind that most non-ascii characters will take up 2-4 bytes.
+  Str(u64),
 }
 
 impl FieldKind {
   const NUMBER_TAG: u8 = 1;
   const BLOB_TAG: u8 = 2;
+  const STR_TAG: u8 = 3;
 
-  fn persist(&self, disk: &mut impl Write) -> io::Result<usize> {
+  fn persist(&self, disk: &mut impl Write) -> Result<usize, SchemaError> {
     match self {
-      FieldKind::Number => {
+      FieldKind::Number(n) => {
         disk.write_all(&[Self::NUMBER_TAG])?;
-        Ok(1)
+        disk.write_u8(*n)?;
+        Ok(2)
       }
       FieldKind::Blob(n) => {
         disk.write(&[Self::BLOB_TAG])?;
+        disk.write_u64::<BigEndian>(*n)?;
+        Ok(9)
+      }
+      FieldKind::Str(n) => {
+        disk.write(&[Self::STR_TAG])?;
         disk.write_u64::<BigEndian>(*n)?;
         Ok(9)
       }
@@ -78,16 +96,23 @@ impl FieldKind {
   }
 
   /// The tuple is (num_bytes_we_read, Field)
-  fn from_persisted(disk: &mut impl Read) -> Result<(usize, FieldKind), SchemaFromBytesError> {
+  fn from_persisted(disk: &mut impl Read) -> Result<(usize, FieldKind), SchemaError> {
     let tag = disk.read_u8()?;
 
     match tag {
-      Self::NUMBER_TAG => Ok((1, FieldKind::Number)),
+      Self::NUMBER_TAG => {
+        let size = disk.read_u8()?;
+        Ok((2, FieldKind::Number(size)))
+      }
       Self::BLOB_TAG => {
         let size = disk.read_u64::<BigEndian>()?;
         Ok((9, FieldKind::Blob(size)))
       }
-      unknown => return Err(SchemaFromBytesError::UnknownFieldType(unknown)),
+      Self::STR_TAG => {
+        let size = disk.read_u64::<BigEndian>()?;
+        Ok((9, FieldKind::Str(size)))
+      }
+      unknown => return Err(SchemaError::UnknownFieldType(unknown)),
     }
   }
 }
@@ -103,24 +128,26 @@ pub struct Schema {
 /// can happen when trying to read the schema back
 /// from the disk
 #[derive(Debug)]
-pub enum SchemaFromBytesError {
+pub enum SchemaError {
   /// We encountered a field with a tag we didn't recognize
   UnknownFieldType(u8),
   /// An i/o error occurred
   Io(io::Error),
   /// An error occurred converting to utf8
   Utf8Error(std::string::FromUtf8Error),
+  /// A column was created that had an invalid data type
+  InvalidFieldConfig,
 }
 
-impl From<io::Error> for SchemaFromBytesError {
-  fn from(err: io::Error) -> SchemaFromBytesError {
-    SchemaFromBytesError::Io(err)
+impl From<io::Error> for SchemaError {
+  fn from(err: io::Error) -> SchemaError {
+    SchemaError::Io(err)
   }
 }
 
-impl From<std::string::FromUtf8Error> for SchemaFromBytesError {
-  fn from(err: std::string::FromUtf8Error) -> SchemaFromBytesError {
-    SchemaFromBytesError::Utf8Error(err)
+impl From<std::string::FromUtf8Error> for SchemaError {
+  fn from(err: std::string::FromUtf8Error) -> SchemaError {
+    SchemaError::Utf8Error(err)
   }
 }
 
@@ -139,7 +166,7 @@ impl Schema {
     &self.fields
   }
 
-  pub fn write_tables(tables: &[Schema], disk: &mut impl Write) -> io::Result<()> {
+  pub fn write_tables(tables: &[Schema], disk: &mut impl Write) -> Result<(), SchemaError> {
     disk.write_u16::<BigEndian>(tables.len() as u16)?;
     for table in tables {
       table.persist(disk)?;
@@ -147,7 +174,7 @@ impl Schema {
     Ok(())
   }
 
-  pub fn read_tables(disk: &mut impl Read) -> Result<Vec<Self>, SchemaFromBytesError> {
+  pub fn read_tables(disk: &mut impl Read) -> Result<Vec<Self>, SchemaError> {
     let num_tables = disk.read_u16::<BigEndian>()?;
     let mut buf = Vec::with_capacity(num_tables as usize);
 
@@ -159,7 +186,7 @@ impl Schema {
 
   /// Serialize this schema to a series of bytes that could be
   /// written to disk, or communicated over the network, or whatever.
-  pub fn persist(&self, disk: &mut impl Write) -> io::Result<usize> {
+  pub fn persist(&self, disk: &mut impl Write) -> Result<usize, SchemaError> {
     let name = self.name.as_bytes();
     disk.write_u16::<BigEndian>(name.len() as u16)?;
     disk.write_all(name)?;
@@ -176,7 +203,7 @@ impl Schema {
   ///
   /// Note that the schema that is being read here _must_ have
   /// been written by `persist`
-  pub fn from_persisted(disk: &mut impl Read) -> Result<Self, SchemaFromBytesError> {
+  pub fn from_persisted(disk: &mut impl Read) -> Result<Self, SchemaError> {
     let name_len = disk.read_u16::<BigEndian>()?;
     let mut buf = vec![0; name_len as usize];
     disk.read_exact(&mut buf)?;
@@ -202,7 +229,7 @@ mod tests {
   }
   #[test]
   fn persist_field_number() {
-    assert_eq!(persist_kind(FieldKind::Number), vec![1 as u8]);
+    assert_eq!(persist_kind(FieldKind::Number(2)), vec![1u8, 2]);
   }
 
   #[test]
@@ -217,8 +244,8 @@ mod tests {
   fn from_persisted_field() {
     use std::io::Cursor;
     assert_eq!(
-      FieldKind::from_persisted(&mut Cursor::new(&[1])).unwrap(),
-      (1, FieldKind::Number)
+      FieldKind::from_persisted(&mut Cursor::new(&[1, 4])).unwrap(),
+      (2, FieldKind::Number(4))
     );
     assert_eq!(
       FieldKind::from_persisted(&mut Cursor::new(&[2, 0, 0, 0, 0, 0, 0, 0, 5])).unwrap(),
@@ -227,10 +254,24 @@ mod tests {
   }
 
   #[test]
+  fn number_type_constraints() {
+    let field = Field::new(FieldKind::Number(7), "id".into()).unwrap_err();
+    match field {
+      SchemaError::InvalidFieldConfig => {}
+      _ => panic!("Failing Test"),
+    };
+    let field = Field::new(FieldKind::Number(16), "id".into()).unwrap_err();
+    match field {
+      SchemaError::InvalidFieldConfig => {}
+      _ => panic!("Failing Test"),
+    };
+  }
+
+  #[test]
   fn persist_schema_with_number() {
     let schema = Schema {
       name: "foo".into(),
-      fields: vec![Field::new(FieldKind::Number, "id".into())],
+      fields: vec![Field::new(FieldKind::Number(8), "id".into()).unwrap()],
     };
     let mut disk = io::Cursor::new(vec![]);
     schema.persist(&mut disk).unwrap();

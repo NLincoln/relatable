@@ -1,8 +1,8 @@
 use db::Database;
 use schema::{Field, FieldKind, Schema};
-use std::{env, fs, io};
+use std::{env, fs};
 
-fn main() -> Result<(), io::Error> {
+fn main() -> Result<(), schema::SchemaError> {
   env_logger::init();
   let args: Vec<_> = env::args().collect();
   if args.len() < 3 {
@@ -29,11 +29,11 @@ fn main() -> Result<(), io::Error> {
       .create_table(Schema::from_fields(
         "the_name".into(),
         vec![
-          Field::new(FieldKind::Blob(10), "id".into()),
-          Field::new(FieldKind::Blob(10), "id2".into()),
-          Field::new(FieldKind::Blob(10), "id3".into()),
-          Field::new(FieldKind::Blob(10), "id4".into()),
-          Field::new(FieldKind::Blob(10), "id5".into()),
+          Field::new(FieldKind::Blob(10), "id".into())?,
+          Field::new(FieldKind::Blob(10), "id2".into())?,
+          Field::new(FieldKind::Blob(10), "id3".into())?,
+          Field::new(FieldKind::Blob(10), "id4".into())?,
+          Field::new(FieldKind::Blob(10), "id5".into())?,
         ],
       ))
       .expect("Error creating table");
