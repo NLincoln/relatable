@@ -113,7 +113,9 @@ impl Block {
 
   pub fn persist(&self, disk: &mut (impl Write + Seek)) -> io::Result<usize> {
     use std::io::SeekFrom;
+    log::debug!("==> Persisting block @ offset {}", self.meta.offset);
     disk.seek(SeekFrom::Start(self.meta.offset))?;
+
     self.meta.persist(disk)?;
     disk.write_all(&self.data)?;
 
@@ -213,8 +215,8 @@ impl<'a> io::Write for BlockDiskView<'a> {
 impl<'a> io::Seek for BlockDiskView<'a> {
   fn seek(&mut self, seek: io::SeekFrom) -> io::Result<u64> {
     use std::io::SeekFrom;
-    match seek {
-      SeekFrom::Start(offset) => self.current_offset = offset,
+    let next_offset = match seek {
+      SeekFrom::Start(offset) => offset,
       SeekFrom::Current(offset) => {
         let mut current = self.current_offset as i64;
         current += offset;
@@ -224,7 +226,7 @@ impl<'a> io::Seek for BlockDiskView<'a> {
             "Tried to seek to a negative",
           ));
         }
-        self.current_offset = current as u64;
+        current as u64
       }
       SeekFrom::End(offset) => {
         let end_offset = self.block.data.len() - 1;
@@ -236,10 +238,11 @@ impl<'a> io::Seek for BlockDiskView<'a> {
             "Tried to seek to a negative",
           ));
         }
-        self.current_offset = current as u64;
+        current as u64
       }
     };
-    Ok(self.current_offset)
+    self.current_offset = next_offset;
+    Ok(next_offset)
   }
 }
 
@@ -286,4 +289,22 @@ fn test_block_disk_view() {
   let mut data = vec![0; 10];
   view.read_exact(&mut data).unwrap();
   assert_eq!(data, vec![12, 13, 14, 15, 16, 17, 18, 19, 20, 21]);
+}
+
+#[test]
+fn test_multiple_writes() -> io::Result<()> {
+  let mut block = Block::new(BlockKind::Record, 0, 42);
+  let mut view = block.disk(10);
+  view.write_u16::<BigEndian>(1)?;
+  view.write_u64::<BigEndian>(2)?;
+  view.write_u32::<BigEndian>(3)?;
+  view.seek(io::SeekFrom::Start(10))?;
+
+  eprintln!("{:?}", view);
+
+  assert_eq!(1, view.read_u16::<BigEndian>()?);
+  assert_eq!(2, view.read_u64::<BigEndian>()?);
+  assert_eq!(3, view.read_u32::<BigEndian>()?);
+
+  Ok(())
 }

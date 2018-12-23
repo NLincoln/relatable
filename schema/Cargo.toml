@@ -6,3 +6,5 @@ edition = "2018"
 
 [dependencies]
 byteorder = "1.2"
+env_logger = "0.6"
+log = "0.4"

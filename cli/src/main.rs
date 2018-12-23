@@ -3,6 +3,7 @@ use std::{env, fs, io};
 use schema::{Field, FieldKind, Schema};
 
 fn main() -> Result<(), io::Error> {
+  env_logger::init();
   let args: Vec<_> = env::args().collect();
   if args.len() < 3 {
     panic!("Args are read|write <filename>");

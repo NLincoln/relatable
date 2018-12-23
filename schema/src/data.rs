@@ -1,4 +1,5 @@
 use crate::{schema, Block, BlockKind, Disk, Schema};
+use log::debug;
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use std::io::{self, Read, Seek, Write};
@@ -71,13 +72,20 @@ impl<T: Disk> Database<T> {
   pub fn create_table(&mut self, schema: Schema) -> Result<(), schema::SchemaFromBytesError> {
     // Alright so the first thing we need to do is go find the
     // schema table and add this entry to it.
+    debug!("Creating Table");
+    debug!(
+      "=> We currently have {} blocks allocated",
+      self.meta.num_allocated_blocks
+    );
     let schema_block_offset = self.meta.schema_block_offset;
+
     self.disk.seek(io::SeekFrom::Start(schema_block_offset))?;
     let block = super::disk::block::Block::from_disk(
       schema_block_offset,
       self.meta.block_size(),
       &mut self.disk,
     )?;
+
     let mut existing_schema = {
       let mut reader = super::disk::BlockDisk::new(self, block)?;
       Schema::read_tables(&mut reader)?
@@ -113,7 +121,8 @@ impl<T: Disk> Database<T> {
   pub fn new(mut disk: T) -> io::Result<Self> {
     use crate::BlockKind;
     // version 1, block size of 2048
-    let block_size_exp = 6 as u8;
+    let block_size_exp = 11 as u8;
+    let version = 1;
     let block_size = 2u64.pow(block_size_exp as u32);
     // create a new root block
     let root_block = Block::new(BlockKind::Root, 0, block_size);
@@ -121,7 +130,7 @@ impl<T: Disk> Database<T> {
 
     let schema_block = Block::new(BlockKind::Schema, block_size, block_size);
     schema_block.persist(&mut disk)?;
-    let meta = DatabaseMeta::new(1, block_size_exp);
+    let meta = DatabaseMeta::new(version, block_size_exp);
     meta.persist(&mut disk)?;
     Ok(Database { disk, meta })
   }
@@ -172,9 +181,11 @@ impl<T: Disk> BlockAllocator for Database<T> {
 }
 
 #[test]
-fn test_writing_multiple_blocks() {
+fn test_adding_a_bunch_of_tables() -> Result<(), schema::SchemaFromBytesError> {
+  env_logger::init();
+
   use crate::schema::{Field, FieldKind};
-  let mut database = Database::new(io::Cursor::new(vec![])).unwrap();
+  let mut database = Database::new(io::Cursor::new(vec![]))?;
   let schema = Schema::from_fields(
     "the_name".into(),
     vec![
@@ -185,10 +196,14 @@ fn test_writing_multiple_blocks() {
       Field::new(FieldKind::Blob(10), "id5".into()),
     ],
   );
-  database.create_table(schema.clone()).unwrap();
-  database.create_table(schema.clone()).unwrap();
-  println!("{:?}", database.disk);
-  let actual_tables = database.schema().unwrap();
-  let expected_tables = vec![schema.clone(), schema.clone()];
-  assert_eq!(actual_tables, expected_tables);
+  let mut expected_tables = vec![];
+
+  for _ in 0..100 {
+    // at each iteration, add the table again. Then re-read the tables.
+    // they should match
+    database.create_table(schema.clone())?;
+    expected_tables.push(schema.clone());
+    assert_eq!(database.schema()?, expected_tables);
+  }
+  Ok(())
 }

@@ -75,31 +75,26 @@ impl<'a, D: BlockAllocator> io::Read for BlockDisk<'a, D> {
     let block_size = self.block_size();
     let start_offset = self.current_offset;
 
-    let mut current_block = {
-      let idx = self.current_block_idx() as usize;
-      self.ensure_num_blocks(idx + 1)?;
-      &mut self.blocks[idx]
-    };
-
     while !buf.is_empty() {
+      let current_block = {
+        let idx = self.current_block_idx() as usize;
+        self.ensure_num_blocks(idx + 1)?;
+        &mut self.blocks[idx]
+      };
+
       let mut disk = current_block.disk(self.current_offset % block_size);
-      let bytes_written = self.current_offset - start_offset;
       match disk.read(buf) {
         Ok(bytes_written) => {
           self.current_offset += bytes_written as u64;
           buf = &mut buf[bytes_written..];
         }
-        Err(ref err) if err.kind() == io::ErrorKind::UnexpectedEof => {
-          current_block = {
-            let idx = self.current_block_idx() as usize;
-            self.ensure_num_blocks(idx + 1)?;
-            &mut self.blocks[idx]
-          };
-        }
+        Err(ref err) if err.kind() == io::ErrorKind::UnexpectedEof => unreachable!(),
         err @ Err(_) => {
+          let bytes_written = self.current_offset - start_offset;
           if bytes_written == 0 {
             return err;
           }
+          current_block.persist(&mut self.disk)?;
           return Ok(bytes_written as usize);
         }
       };
@@ -114,30 +109,19 @@ impl<'a, D: BlockAllocator> io::Write for BlockDisk<'a, D> {
     let block_size = self.block_size();
     let start_offset = self.current_offset;
 
-    let mut current_block = {
-      let idx = self.current_block_idx() as usize;
-      self.ensure_num_blocks(idx + 1)?;
-      &mut self.blocks[idx]
-    };
-
     while !buf.is_empty() {
-      // two lines are related: Since we always insert `block_size` at a time,
-      // this modulo should always be true
+      let current_block = {
+        let idx = self.current_block_idx() as usize;
+        self.ensure_num_blocks(idx + 1)?;
+        &mut self.blocks[idx]
+      };
       let mut disk = current_block.disk(self.current_offset % block_size);
 
-      let bytes_written = self.current_offset - start_offset;
       match disk.write(buf) {
         Ok(bytes_written) => {
           self.current_offset += bytes_written as u64;
           buf = &buf[bytes_written..];
           current_block.persist(&mut self.disk)?;
-          if bytes_written == block_size as usize {
-            current_block = {
-              let idx = self.current_block_idx() as usize;
-              self.ensure_num_blocks(idx + 1)?;
-              &mut self.blocks[idx]
-            };
-          }
         }
         Err(ref err) if err.kind() == io::ErrorKind::UnexpectedEof => {
           // We will always be able to write an entire blocks worth of bytes. Unless the buf is empty.
@@ -145,12 +129,14 @@ impl<'a, D: BlockAllocator> io::Write for BlockDisk<'a, D> {
           unreachable!();
         }
         err @ Err(_) => {
-          if bytes_written == 0 {
+          let bytes_written_total = self.current_offset - start_offset;
+
+          if bytes_written_total == 0 {
             return err;
           }
           current_block.persist(&mut self.disk)?;
 
-          return Ok(bytes_written as usize);
+          return Ok(bytes_written_total as usize);
         }
       };
     }
@@ -206,13 +192,35 @@ mod tests {
     }
     // write a BUNCH of data
     data_to_write.append(&mut data_to_write.clone());
-    // println!("{:?}", data_to_write);
     blockdisk.write_all(&data_to_write)?;
 
     blockdisk.seek(io::SeekFrom::Start(260))?;
     let mut result = vec![0; 5];
     blockdisk.read_exact(&mut result)?;
     assert_eq!(result, vec![4, 5, 6, 7, 8]);
+
+    Ok(())
+  }
+  #[test]
+  fn test_a_bunch_of_small_writes() -> io::Result<()> {
+    use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+    let mut db = InMemoryDatabase::new(io::Cursor::new(vec![]));
+    let block = db.allocate_block()?;
+    let mut blockdisk = BlockDisk::new(&mut db, block)?;
+
+    blockdisk.write_u16::<BigEndian>(1)?;
+    blockdisk.write_u64::<BigEndian>(10)?;
+    // WE LOOP AROUND TO OVERWRITING THE BUFFER HERE
+    // I'm guessing theres an off-by-one error in current_block_idx()
+    blockdisk.write_u64::<BigEndian>(11)?;
+    blockdisk.write_u64::<BigEndian>(12)?;
+
+    blockdisk.seek(io::SeekFrom::Start(0))?;
+
+    assert_eq!(1, blockdisk.read_u16::<BigEndian>()?);
+    assert_eq!(10, blockdisk.read_u64::<BigEndian>()?);
+    assert_eq!(11, blockdisk.read_u64::<BigEndian>()?);
+    assert_eq!(12, blockdisk.read_u64::<BigEndian>()?);
 
     Ok(())
   }

@@ -1,4 +1,5 @@
 //! Schema definition and data storage
+
 mod data;
 mod disk;
 #[cfg(test)]
