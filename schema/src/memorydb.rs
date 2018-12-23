@@ -1,7 +1,4 @@
-use crate::{
-  disk::{block, BlockAllocator},
-  Block,
-};
+use crate::{disk::BlockAllocator, Block};
 use std::io::{self, Seek};
 const BLOCK_SIZE: u64 = 32;
 
@@ -50,7 +47,7 @@ impl BlockAllocator for InMemoryDatabase {
   fn allocate_block(&mut self) -> io::Result<Block> {
     let next_block_offset = BLOCK_SIZE * self.blocks_allocated;
     self.disk.seek(io::SeekFrom::Start(next_block_offset))?;
-    let block = Block::new(block::BlockKind::Record, next_block_offset, BLOCK_SIZE);
+    let block = Block::new(next_block_offset, BLOCK_SIZE);
     block.persist(&mut self.disk)?;
     self.blocks_allocated += 1;
     Ok(block)

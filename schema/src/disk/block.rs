@@ -1,20 +1,5 @@
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use std::io::{self, Read, Seek, Write};
-#[derive(Debug, PartialEq, Clone)]
-#[repr(u8)]
-pub enum BlockKind {
-  /// The root block. Contains information about the database itself, such as
-  /// the location of the root block
-  Root = 1,
-  /// A Schema Block. These contain the serialized schema for the db.
-  /// There may be multiple schema blocks.
-  Schema = 2,
-
-  /// A record block contains the actual data. It's important to note that
-  /// if a block is a `Record` block, then it will only contain data for a single
-  /// table. It's impossible to say what that table is, however (that data isn't encoded into a block)
-  Record = 3,
-}
 
 /// Meta-information about a block
 /// It is possible to create one of these
@@ -24,7 +9,6 @@ pub enum BlockKind {
 /// in
 #[derive(Debug)]
 pub struct BlockMeta {
-  kind: BlockKind,
   /// The offset in the file this block appears at. Isn't actually written to disk
   offset: u64,
 
@@ -48,15 +32,14 @@ impl BlockMeta {
     self.next_block
   }
   fn size_on_disk() -> usize {
-    // 1 byte for tag, 8 bytes for next block, 8 bytes for size
+    // 8 bytes for next block, 8 bytes for size
     // Just gonna go ahead and say that this is always the case,
     // to avoid headaches
-    17
+    16
   }
   /// This will only write the block header.
   /// So i.e. only kind and next_block
   fn persist(&self, disk: &mut impl Write) -> io::Result<()> {
-    disk.write_u8(self.kind.clone() as u8)?;
     disk.write_u64::<BigEndian>(self.next_block.unwrap_or(0))?;
     disk.write_u64::<BigEndian>(self.size)?;
 
@@ -65,13 +48,6 @@ impl BlockMeta {
 
   pub fn new(offset: u64, disk: &mut impl Read) -> io::Result<Self> {
     // blocks start off with the block meta, then the rest of the data.
-    let tag = disk.read_u8()?;
-    let kind = match tag {
-      1 => BlockKind::Root,
-      2 => BlockKind::Schema,
-      3 => BlockKind::Record,
-      unknown => panic!("Unknown block type {}", unknown),
-    };
     let next_block = disk.read_u64::<BigEndian>()?;
     let next_block = if next_block == 0 {
       None
@@ -80,7 +56,6 @@ impl BlockMeta {
     };
     let size = disk.read_u64::<BigEndian>()?;
     Ok(BlockMeta {
-      kind,
       next_block,
       size,
       offset,
@@ -139,9 +114,8 @@ impl Block {
     }
   }
 
-  pub fn new(kind: BlockKind, offset: u64, blocksize: u64) -> Self {
+  pub fn new(offset: u64, blocksize: u64) -> Self {
     let meta = BlockMeta {
-      kind,
       offset,
       next_block: None,
       size: 0,
@@ -249,7 +223,7 @@ impl<'a> io::Seek for BlockDiskView<'a> {
 #[test]
 fn test_block_disk_view_err() {
   let block_size = 128;
-  let mut block = Block::new(BlockKind::Record, 0, block_size);
+  let mut block = Block::new(0, block_size);
   let data_size = block.data.len() as u64;
 
   let mut view = block.disk(0);
@@ -261,14 +235,14 @@ fn test_block_disk_view_err() {
   view.write_all(&data).unwrap();
 
   view
-    .seek(io::SeekFrom::Start(
-      // going to try to read 10 bytes, going right up to the end
-      data_size - 5,
+    .seek(io::SeekFrom::Current(
+      // going to try to read 5 bytes, going right up to the end
+      -5,
     ))
     .unwrap();
   let mut data = vec![0; 5];
   view.read_exact(&mut data).unwrap();
-  assert_eq!(data, vec![106, 107, 108, 109, 110]);
+  assert_eq!(data, vec![107, 108, 109, 110, 111]);
   // now for the interesting part: the next read should fail:
   let mut data = vec![0; 5];
   assert!(view.read(&mut data).is_err());
@@ -276,7 +250,7 @@ fn test_block_disk_view_err() {
 
 #[test]
 fn test_block_disk_view() {
-  let mut block = Block::new(BlockKind::Record, 0, 256);
+  let mut block = Block::new(0, 256);
   let mut view = block.disk(0);
   let mut data = vec![];
 
@@ -293,7 +267,7 @@ fn test_block_disk_view() {
 
 #[test]
 fn test_multiple_writes() -> io::Result<()> {
-  let mut block = Block::new(BlockKind::Record, 0, 42);
+  let mut block = Block::new(0, 42);
   let mut view = block.disk(10);
   view.write_u16::<BigEndian>(1)?;
   view.write_u64::<BigEndian>(2)?;

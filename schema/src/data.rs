@@ -1,4 +1,4 @@
-use crate::{schema, Block, BlockKind, Disk, Schema};
+use crate::{schema, Block, Disk, Schema};
 use log::debug;
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
@@ -119,16 +119,15 @@ impl<T: Disk> Database<T> {
   /// Initializes a new database on the provided disk
   /// There should be no information on the provided disk
   pub fn new(mut disk: T) -> io::Result<Self> {
-    use crate::BlockKind;
     // version 1, block size of 2048
     let block_size_exp = 11 as u8;
     let version = 1;
     let block_size = 2u64.pow(block_size_exp as u32);
     // create a new root block
-    let root_block = Block::new(BlockKind::Root, 0, block_size);
+    let root_block = Block::new(0, block_size);
     root_block.persist(&mut disk)?;
 
-    let schema_block = Block::new(BlockKind::Schema, block_size, block_size);
+    let schema_block = Block::new(block_size, block_size);
     schema_block.persist(&mut disk)?;
     let meta = DatabaseMeta::new(version, block_size_exp);
     meta.persist(&mut disk)?;
@@ -169,7 +168,7 @@ impl<T: Disk> BlockAllocator for Database<T> {
   fn allocate_block(&mut self) -> io::Result<Block> {
     let next_block_offset = self.meta.num_allocated_blocks * self.meta.block_size();
     self.disk.seek(io::SeekFrom::Start(next_block_offset))?;
-    let block = Block::new(BlockKind::Record, next_block_offset, self.meta.block_size());
+    let block = Block::new(next_block_offset, self.meta.block_size());
     self.meta.num_allocated_blocks += 1;
     self.meta.persist(&mut self.disk)?;
     block.persist(&mut self.disk)?;
