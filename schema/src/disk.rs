@@ -1,4 +1,4 @@
-use std::io::{Read, Seek, Write};
+use std::io::{self, Read, Seek, Write};
 
 /// Convenience trait for Read + Write + Seek
 pub trait Disk: Read + Write + Seek {}
@@ -6,71 +6,223 @@ impl<T: Read + Write + Seek> Disk for T {}
 
 pub mod block;
 
-mod block_io {
-  use super::{block::Block, Disk};
-  use std::io;
+use self::block::Block;
 
-  pub trait BlockAllocator: Disk {
-    fn allocate_block(&mut self) -> io::Result<Block>;
+pub trait BlockAllocator: Disk {
+  fn allocate_block(&mut self) -> io::Result<Block>;
+  fn read_block(&mut self, offset: u64) -> io::Result<Block>;
+}
+
+#[derive(Debug)]
+pub struct BlockDisk<'a, D: BlockAllocator> {
+  blocks: Vec<block::Block>,
+  current_offset: u64,
+  disk: &'a mut D,
+}
+
+impl<'a, D: BlockAllocator> BlockDisk<'a, D> {
+  pub fn new(disk: &'a mut D, start_block: block::Block) -> io::Result<Self> {
+    Ok(BlockDisk {
+      blocks: vec![start_block],
+      current_offset: 0,
+      disk,
+    })
   }
 
-  pub struct BlockWriter<'a, 'b> {
-    disk: &'a mut BlockAllocator,
-    start_block: &'b mut Block,
-    current_offset: u64,
-  }
-
-  impl<'a, 'b> BlockWriter<'a, 'b> {
-    pub fn new(disk: &'a mut impl BlockAllocator, start_block: &'b mut Block) -> Self {
-      Self {
-        disk,
-        start_block,
-        current_offset: 0,
+  fn increase_read_size_by_block(&mut self) -> io::Result<()> {
+    let current_block = self.blocks.last_mut().unwrap(); // unwrap is fine because we always start with a block
+    let next_block = current_block.meta().next_block();
+    match next_block {
+      Some(offset) => {
+        let block = self.disk.read_block(offset)?;
+        self.blocks.push(block);
+        Ok(())
+      }
+      None => {
+        let next_block = self.disk.allocate_block()?;
+        current_block.set_next_block(Some(next_block.meta().offset()));
+        current_block.persist(&mut self.disk)?;
+        self.blocks.push(next_block);
+        Ok(())
       }
     }
   }
-  use std::io::SeekFrom;
-  impl<'a, 'b> io::Seek for BlockWriter<'a, 'b> {
-    fn seek(&mut self, pos: io::SeekFrom) -> io::Result<u64> {
-      let new_pos = match pos {
-        SeekFrom::Current(num) => self.current_offset + num as u64,
-        SeekFrom::Start(num) => num,
-        SeekFrom::End(num) => return Err(io::Error::new(io::ErrorKind::InvalidData, "Attempted to seek from the end of a BlockWriter. BlockWriters operate on a conceptually infinite amount of memory, so seeking from the end is impossible"))
+
+  /// Make sure that we have at least n blocks allocated
+  fn ensure_num_blocks(&mut self, num: usize) -> io::Result<()> {
+    while self.blocks.len() < num {
+      self.increase_read_size_by_block()?;
+    }
+    Ok(())
+  }
+
+  fn block_size(&self) -> u64 {
+    self.blocks[0].data().len() as u64
+  }
+  fn current_block_idx(&self) -> u64 {
+    self.current_offset / self.block_size()
+  }
+  fn current_size_allocated(&self) -> u64 {
+    self.block_size() * self.blocks.len() as u64
+  }
+}
+
+impl<'a, D: BlockAllocator> io::Read for BlockDisk<'a, D> {
+  fn read(&mut self, mut buf: &mut [u8]) -> io::Result<usize> {
+    // Start at the current offset and read n bytes from the buffer.
+    // if we hit the point at which we're at the end of a block,
+    // look and see if we're at the end of a block
+    let block_size = self.block_size();
+    let start_offset = self.current_offset;
+
+    while !buf.is_empty() {
+      let current_block = {
+        let idx = self.current_block_idx() as usize;
+        self.ensure_num_blocks(idx + 1)?;
+        &mut self.blocks[idx]
       };
-      // TODO :: Possibly need to allocate new blocks here.
-      self.current_offset = new_pos;
-      Ok(new_pos)
+
+      let mut disk = current_block.disk(self.current_offset % block_size);
+      match disk.read(buf) {
+        Ok(bytes_written) => {
+          self.current_offset += bytes_written as u64;
+          buf = &mut buf[bytes_written..];
+        }
+        Err(ref err) if err.kind() == io::ErrorKind::UnexpectedEof => unreachable!(),
+        err @ Err(_) => {
+          let bytes_written = self.current_offset - start_offset;
+          if bytes_written == 0 {
+            return err;
+          }
+          current_block.persist(&mut self.disk)?;
+          return Ok(bytes_written as usize);
+        }
+      };
     }
+
+    Ok((self.current_offset - start_offset) as usize)
   }
+}
 
-  impl<'a, 'b> io::Write for BlockWriter<'a, 'b> {
-    fn write(&mut self, mut buf: &[u8]) -> io::Result<usize> {
-      use std::cell::Cell;
-      // So the first step is to see if we have enough space in our
-      // current buf left to actually write all of this
-      let mut current_block = Cell::new(self.start_block);
+impl<'a, D: BlockAllocator> io::Write for BlockDisk<'a, D> {
+  fn write(&mut self, mut buf: &[u8]) -> io::Result<usize> {
+    let block_size = self.block_size();
+    let start_offset = self.current_offset;
 
-      loop {
-        let target_buf = current_block.get_mut().data_mut();
-        let num_bytes_that_can_fit_in_this_block = target_buf.len() - self.current_offset as usize;
-        let num_bytes_to_copy = std::cmp::min(num_bytes_that_can_fit_in_this_block, buf.len());
-        for i in 0..num_bytes_to_copy {
-          let offset = self.current_offset + i as u64;
-          target_buf[offset as usize] = buf[i];
+    while !buf.is_empty() {
+      let current_block = {
+        let idx = self.current_block_idx() as usize;
+        self.ensure_num_blocks(idx + 1)?;
+        &mut self.blocks[idx]
+      };
+      let mut disk = current_block.disk(self.current_offset % block_size);
+
+      match disk.write(buf) {
+        Ok(bytes_written) => {
+          self.current_offset += bytes_written as u64;
+          buf = &buf[bytes_written..];
+          current_block.persist(&mut self.disk)?;
         }
-
-        self.current_offset += num_bytes_to_copy as u64;
-        buf = &buf[(self.current_offset as usize)..];
-        if buf.is_empty() {
-          break;
+        Err(ref err) if err.kind() == io::ErrorKind::UnexpectedEof => {
+          // We will always be able to write an entire blocks worth of bytes. Unless the buf is empty.
+          // if the buf is empty we return tho
+          unreachable!();
         }
-        current_block.set(&mut self.disk.allocate_block()?);
+        err @ Err(_) => {
+          let bytes_written_total = self.current_offset - start_offset;
+
+          if bytes_written_total == 0 {
+            return err;
+          }
+          current_block.persist(&mut self.disk)?;
+
+          return Ok(bytes_written_total as usize);
+        }
+      };
+    }
+
+    Ok((self.current_offset - start_offset) as usize)
+  }
+  fn flush(&mut self) -> io::Result<()> {
+    Ok(())
+  }
+}
+
+impl<'a, D: BlockAllocator> io::Seek for BlockDisk<'a, D> {
+  fn seek(&mut self, pos: io::SeekFrom) -> io::Result<u64> {
+    use std::io::SeekFrom;
+
+    let next_offset = match pos {
+      SeekFrom::Start(offset) => offset,
+      SeekFrom::End(_) => return Err(io::Error::new(io::ErrorKind::InvalidInput, "Attempted to seek from the end of a BlockDisk. BlockDisks are assumed to be infinite in size")),
+      SeekFrom::Current(offset) => {
+        let current = self.current_offset as i64;
+        let next = current + offset;
+        if next < 0 {
+          return Err(io::Error::new(io::ErrorKind::InvalidInput, "Attempted to seek to a negative offset"));
+        }
+        next as u64
       }
+    };
+    while self.current_size_allocated() < next_offset {
+      self.increase_read_size_by_block()?;
+    }
 
-      unimplemented!()
-    }
-    fn flush(&mut self) -> io::Result<()> {
-      unimplemented!()
-    }
+    self.current_offset = next_offset;
+
+    Ok(next_offset)
   }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::memorydb::InMemoryDatabase;
+  use std::io;
+  #[test]
+  fn test_blockdisk_io() -> io::Result<()> {
+    let mut db = InMemoryDatabase::new(io::Cursor::new(vec![0; 128]));
+
+    let block = BlockAllocator::allocate_block(&mut db)?;
+    let mut blockdisk = BlockDisk::new(&mut db, block)?;
+
+    let mut data_to_write = vec![];
+    for i in 0..=255 {
+      data_to_write.push(i);
+    }
+    // write a BUNCH of data
+    data_to_write.append(&mut data_to_write.clone());
+    blockdisk.write_all(&data_to_write)?;
+
+    blockdisk.seek(io::SeekFrom::Start(260))?;
+    let mut result = vec![0; 5];
+    blockdisk.read_exact(&mut result)?;
+    assert_eq!(result, vec![4, 5, 6, 7, 8]);
+
+    Ok(())
+  }
+  #[test]
+  fn test_a_bunch_of_small_writes() -> io::Result<()> {
+    use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+    let mut db = InMemoryDatabase::new(io::Cursor::new(vec![]));
+    let block = db.allocate_block()?;
+    let mut blockdisk = BlockDisk::new(&mut db, block)?;
+
+    blockdisk.write_u16::<BigEndian>(1)?;
+    blockdisk.write_u64::<BigEndian>(10)?;
+    // WE LOOP AROUND TO OVERWRITING THE BUFFER HERE
+    // I'm guessing theres an off-by-one error in current_block_idx()
+    blockdisk.write_u64::<BigEndian>(11)?;
+    blockdisk.write_u64::<BigEndian>(12)?;
+
+    blockdisk.seek(io::SeekFrom::Start(0))?;
+
+    assert_eq!(1, blockdisk.read_u16::<BigEndian>()?);
+    assert_eq!(10, blockdisk.read_u64::<BigEndian>()?);
+    assert_eq!(11, blockdisk.read_u64::<BigEndian>()?);
+    assert_eq!(12, blockdisk.read_u64::<BigEndian>()?);
+
+    Ok(())
+  }
+
 }

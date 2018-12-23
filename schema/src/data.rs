@@ -1,38 +1,17 @@
-use crate::{Block, Disk, Schema};
+use crate::{schema, Block, BlockKind, Disk, Schema};
+use log::debug;
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use std::io::{self, Read, Seek, Write};
 
-pub struct Table {
-  name: String,
-  columns: Schema,
-}
-
-impl Table {
-  pub fn name(&self) -> &str {
-    &self.name
-  }
-  pub fn schema(&self) -> &Schema {
-    &self.columns
-  }
-  /*
-   * Format here goes:
-   * tablename_size(u16) tablename num_columns(u16) columns+
-   */
-  fn persist(&self, disk: &mut impl Write) -> io::Result<usize> {
-    unimplemented!()
-  }
-  fn from_persisted(disk: &mut impl Read) -> io::Result<Self> {
-    unimplemented!()
-  }
-}
-
+#[derive(Debug)]
 pub struct Database<T: Disk> {
   disk: T,
   meta: DatabaseMeta,
 }
 
 /// Basically a structure that holds all the information in the root block
+#[derive(Debug)]
 struct DatabaseMeta {
   /// The version of this database. Should be 1
   version: u8,
@@ -61,7 +40,11 @@ impl DatabaseMeta {
     }
   }
 
-  fn persist(&self, disk: &mut (impl Write + Seek)) -> io::Result<()> {
+  fn block_size(&self) -> u64 {
+    2u64.pow(self.block_size_exp as u32)
+  }
+
+  fn persist<D: Write + Seek>(&self, disk: &mut D) -> io::Result<()> {
     disk.seek(io::SeekFrom::Start(0))?;
     disk.write_u8(self.version)?;
     disk.write_u8(self.block_size_exp)?;
@@ -70,8 +53,8 @@ impl DatabaseMeta {
     Ok(())
   }
 
-  fn from_disk(disk: &mut (impl Read + Seek)) -> io::Result<DatabaseMeta> {
-    disk.seek(io::SeekFrom::Start(0));
+  fn from_disk<D: Read + Seek>(disk: &mut D) -> io::Result<DatabaseMeta> {
+    disk.seek(io::SeekFrom::Start(0))?;
     let version = disk.read_u8()?;
     let block_size_exp = disk.read_u8()?;
     let num_allocated_blocks = disk.read_u64::<BigEndian>()?;
@@ -86,24 +69,68 @@ impl DatabaseMeta {
 }
 
 impl<T: Disk> Database<T> {
-  pub fn create_table(&mut self, schema: Schema) -> io::Result<()> {
+  pub fn create_table(&mut self, schema: Schema) -> Result<(), schema::SchemaFromBytesError> {
     // Alright so the first thing we need to do is go find the
     // schema table and add this entry to it.
+    debug!("Creating Table");
+    debug!(
+      "=> We currently have {} blocks allocated",
+      self.meta.num_allocated_blocks
+    );
+    let schema_block_offset = self.meta.schema_block_offset;
 
-    unimplemented!()
+    self.disk.seek(io::SeekFrom::Start(schema_block_offset))?;
+    let block = super::disk::block::Block::from_disk(
+      schema_block_offset,
+      self.meta.block_size(),
+      &mut self.disk,
+    )?;
+
+    let mut existing_schema = {
+      let mut reader = super::disk::BlockDisk::new(self, block)?;
+      Schema::read_tables(&mut reader)?
+    };
+    existing_schema.push(schema);
+    self.disk.seek(io::SeekFrom::Start(schema_block_offset))?;
+
+    let block = super::disk::block::Block::from_disk(
+      schema_block_offset,
+      self.meta.block_size(),
+      &mut self.disk,
+    )?;
+
+    let mut writer = super::disk::BlockDisk::new(self, block)?;
+    Schema::write_tables(&existing_schema, &mut writer)?;
+
+    Ok(())
   }
+  pub fn schema(&mut self) -> Result<Vec<Schema>, schema::SchemaFromBytesError> {
+    let schema_block_offset = self.meta.schema_block_offset;
+    self.disk.seek(io::SeekFrom::Start(schema_block_offset))?;
+    let block = super::disk::block::Block::from_disk(
+      schema_block_offset,
+      self.meta.block_size(),
+      &mut self.disk,
+    )?;
+    let mut reader = super::disk::BlockDisk::new(self, block)?;
+    Schema::read_tables(&mut reader)
+  }
+
   /// Initializes a new database on the provided disk
   /// There should be no information on the provided disk
   pub fn new(mut disk: T) -> io::Result<Self> {
     use crate::BlockKind;
+    // version 1, block size of 2048
+    let block_size_exp = 11 as u8;
+    let version = 1;
+    let block_size = 2u64.pow(block_size_exp as u32);
     // create a new root block
-    let root_block = Block::new(BlockKind::Root, 0, crate::BLOCK_SIZE);
+    let root_block = Block::new(BlockKind::Root, 0, block_size);
     root_block.persist(&mut disk)?;
 
-    let schema_block = Block::new(BlockKind::Schema, crate::BLOCK_SIZE, crate::BLOCK_SIZE);
+    let schema_block = Block::new(BlockKind::Schema, block_size, block_size);
     schema_block.persist(&mut disk)?;
-    // version 1, block size of 2048
-    let meta = DatabaseMeta::new(1, 11);
+    let meta = DatabaseMeta::new(version, block_size_exp);
     meta.persist(&mut disk)?;
     Ok(Database { disk, meta })
   }
@@ -113,4 +140,70 @@ impl<T: Disk> Database<T> {
 
     Ok(Database { disk, meta })
   }
+}
+
+use super::disk::BlockAllocator;
+
+impl<T: Disk> io::Write for Database<T> {
+  fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+    self.disk.write(buf)
+  }
+  fn flush(&mut self) -> io::Result<()> {
+    self.disk.flush()
+  }
+}
+
+impl<T: Disk> io::Read for Database<T> {
+  fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+    self.disk.read(buf)
+  }
+}
+
+impl<T: Disk> io::Seek for Database<T> {
+  fn seek(&mut self, pos: io::SeekFrom) -> io::Result<u64> {
+    self.disk.seek(pos)
+  }
+}
+
+impl<T: Disk> BlockAllocator for Database<T> {
+  fn allocate_block(&mut self) -> io::Result<Block> {
+    let next_block_offset = self.meta.num_allocated_blocks * self.meta.block_size();
+    self.disk.seek(io::SeekFrom::Start(next_block_offset))?;
+    let block = Block::new(BlockKind::Record, next_block_offset, self.meta.block_size());
+    self.meta.num_allocated_blocks += 1;
+    self.meta.persist(&mut self.disk)?;
+    block.persist(&mut self.disk)?;
+    Ok(block)
+  }
+  fn read_block(&mut self, offset: u64) -> io::Result<Block> {
+    Block::from_disk(offset, self.meta.block_size(), &mut self.disk)
+  }
+}
+
+#[test]
+fn test_adding_a_bunch_of_tables() -> Result<(), schema::SchemaFromBytesError> {
+  env_logger::init();
+
+  use crate::schema::{Field, FieldKind};
+  let mut database = Database::new(io::Cursor::new(vec![]))?;
+  let schema = Schema::from_fields(
+    "the_name".into(),
+    vec![
+      Field::new(FieldKind::Blob(10), "id".into()),
+      Field::new(FieldKind::Blob(10), "id2".into()),
+      Field::new(FieldKind::Blob(10), "id3".into()),
+      Field::new(FieldKind::Blob(10), "id4".into()),
+      Field::new(FieldKind::Blob(10), "id5".into()),
+    ],
+  );
+  let mut expected_tables = vec![];
+
+  for _ in 0..100 {
+    // at each iteration, add the table again. Then re-read the tables.
+    // they should match
+    database.create_table(schema.clone())?;
+    expected_tables.push(schema.clone());
+    assert_eq!(database.schema()?, expected_tables);
+  }
+  Ok(())
 }
