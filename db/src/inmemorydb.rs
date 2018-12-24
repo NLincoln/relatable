@@ -4,8 +4,8 @@ const BLOCK_SIZE: u64 = 32;
 
 #[derive(Debug)]
 pub struct InMemoryDatabase {
-  blocks_allocated: u64,
-  disk: io::Cursor<Vec<u8>>,
+  pub blocks_allocated: u64,
+  pub disk: io::Cursor<Vec<u8>>,
 }
 
 impl InMemoryDatabase {
@@ -14,27 +14,6 @@ impl InMemoryDatabase {
       blocks_allocated: 0,
       disk,
     }
-  }
-}
-
-impl io::Write for InMemoryDatabase {
-  fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-    self.disk.write(buf)
-  }
-  fn flush(&mut self) -> io::Result<()> {
-    self.disk.flush()
-  }
-}
-
-impl io::Read for InMemoryDatabase {
-  fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-    self.disk.read(buf)
-  }
-}
-
-impl io::Seek for InMemoryDatabase {
-  fn seek(&mut self, pos: io::SeekFrom) -> io::Result<u64> {
-    self.disk.seek(pos)
   }
 }
 
@@ -51,5 +30,8 @@ impl BlockAllocator for InMemoryDatabase {
     block.persist(&mut self.disk)?;
     self.blocks_allocated += 1;
     Ok(block)
+  }
+  fn write_block(&mut self, block: &Block) -> io::Result<()> {
+    block.persist(&mut self.disk).map(|_| ())
   }
 }
