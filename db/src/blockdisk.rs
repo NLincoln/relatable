@@ -201,12 +201,39 @@ mod tests {
     use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
     let mut db = InMemoryDatabase::new(io::Cursor::new(vec![]));
     let block = db.allocate_block()?;
+    assert!(db.blocks_allocated == 1);
     let mut blockdisk = BlockDisk::new(&mut db, block)?;
 
+    // to get the offsets all wonky
+    blockdisk.write_u8(1)?;
+    blockdisk.write_u64::<BigEndian>(10)?;
+    blockdisk.write_u64::<BigEndian>(11)?;
+    blockdisk.write_u64::<BigEndian>(12)?;
+    blockdisk.write_u64::<BigEndian>(13)?;
+
+    blockdisk.seek(io::SeekFrom::Start(0))?;
+
+    assert_eq!(1, blockdisk.read_u8()?);
+    assert_eq!(10, blockdisk.read_u64::<BigEndian>()?);
+    assert_eq!(11, blockdisk.read_u64::<BigEndian>()?);
+    assert_eq!(12, blockdisk.read_u64::<BigEndian>()?);
+    assert_eq!(13, blockdisk.read_u64::<BigEndian>()?);
+
+    // make sure we ACTUALLY allocated a block here
+    assert!(db.blocks_allocated > 1);
+    Ok(())
+  }
+  #[test]
+  fn test_funky_block_ordering() -> io::Result<()> {
+    use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+    let mut db = InMemoryDatabase::new(io::Cursor::new(vec![]));
+    let start_block_a = db.allocate_block()?;
+    // Allocate a next block so that when block a overflows we have to skip a block
+    db.allocate_block()?;
+
+    let mut blockdisk = BlockDisk::new(&mut db, start_block_a)?;
     blockdisk.write_u16::<BigEndian>(1)?;
     blockdisk.write_u64::<BigEndian>(10)?;
-    // WE LOOP AROUND TO OVERWRITING THE BUFFER HERE
-    // I'm guessing theres an off-by-one error in current_block_idx()
     blockdisk.write_u64::<BigEndian>(11)?;
     blockdisk.write_u64::<BigEndian>(12)?;
 
@@ -216,7 +243,6 @@ mod tests {
     assert_eq!(10, blockdisk.read_u64::<BigEndian>()?);
     assert_eq!(11, blockdisk.read_u64::<BigEndian>()?);
     assert_eq!(12, blockdisk.read_u64::<BigEndian>()?);
-
     Ok(())
   }
 

@@ -4,8 +4,8 @@ const BLOCK_SIZE: u64 = 32;
 
 #[derive(Debug)]
 pub struct InMemoryDatabase {
-  blocks_allocated: u64,
-  disk: io::Cursor<Vec<u8>>,
+  pub blocks_allocated: u64,
+  pub disk: io::Cursor<Vec<u8>>,
 }
 
 impl InMemoryDatabase {

@@ -57,7 +57,37 @@ impl Schema {
     &self.fields
   }
 
-  pub fn write_tables(tables: &[Schema], disk: &mut impl Write) -> Result<(), SchemaError> {
+  pub(crate) fn offset_of(&self, field_index: usize) -> usize {
+    let mut offset = 0;
+    for i in 0..field_index {
+      let field = &self.fields[i];
+      offset += field.kind().size();
+    }
+    offset
+  }
+}
+
+/// An `OnDiskSchema` is the combination of a schema and the place to find it on disk.
+/// I'm making the distinction here because I predict that I'll want to have in memory tables
+/// sometime in the future
+#[derive(Debug, PartialEq)]
+pub struct OnDiskSchema {
+  data_block_offset: u64,
+  schema: Schema,
+}
+
+impl OnDiskSchema {
+  pub fn new(data_block_offset: u64, schema: Schema) -> Self {
+    Self {
+      data_block_offset,
+      schema,
+    }
+  }
+  pub fn schema(&self) -> &Schema {
+    &self.schema
+  }
+
+  pub fn write_tables(tables: &[OnDiskSchema], disk: &mut impl Write) -> Result<(), SchemaError> {
     disk.write_u16::<BigEndian>(tables.len() as u16)?;
     for table in tables {
       table.persist(disk)?;
@@ -70,60 +100,54 @@ impl Schema {
     let mut buf = Vec::with_capacity(num_tables as usize);
 
     for _ in 0..num_tables {
-      buf.push(Schema::from_persisted(disk)?);
+      buf.push(OnDiskSchema::from_persisted(disk)?);
     }
     Ok(buf)
   }
 
-  /// Serialize this schema to a series of bytes that could be
-  /// written to disk, or communicated over the network, or whatever.
-  pub fn persist(&self, disk: &mut impl Write) -> Result<usize, SchemaError> {
-    let name = self.name.as_bytes();
+  pub(crate) fn persist(&self, disk: &mut impl Write) -> Result<(), SchemaError> {
+    let name = self.schema.name.as_bytes();
     disk.write_u16::<BigEndian>(name.len() as u16)?;
     disk.write_all(name)?;
-    disk.write_u16::<BigEndian>(self.fields().len() as u16)?;
-    let mut count = 2;
+    disk.write_u64::<BigEndian>(self.data_block_offset)?;
+    disk.write_u16::<BigEndian>(self.schema.fields().len() as u16)?;
 
-    for field in self.fields() {
-      count += field.persist(disk)?;
+    for field in self.schema.fields() {
+      field.persist(disk)?;
     }
-    Ok(count)
+
+    Ok(())
   }
 
-  /// Reads the schema information from the disk
-  ///
-  /// Note that the schema that is being read here _must_ have
-  /// been written by `persist`
-  pub fn from_persisted(disk: &mut impl Read) -> Result<Self, SchemaError> {
+  pub(crate) fn from_persisted(disk: &mut impl Read) -> Result<Self, SchemaError> {
     let name_len = disk.read_u16::<BigEndian>()?;
     let mut buf = vec![0; name_len as usize];
     disk.read_exact(&mut buf)?;
     let name = String::from_utf8(buf)?;
+
+    let data_block_offset = disk.read_u64::<BigEndian>()?;
+
     let mut fields = vec![];
     let num_fields = disk.read_u16::<BigEndian>()?;
 
     for _ in 0..num_fields {
-      let (_, field) = Field::from_persisted(disk)?;
+      let field = Field::from_persisted(disk)?;
       fields.push(field);
     }
-    Ok(Self { fields, name })
-  }
-
-  pub(crate) fn offset_of(&self, field_index: usize) -> usize {
-    let mut offset = 0;
-    for i in 0..field_index {
-      let field = &self.fields[i];
-      offset += field.kind().size();
-    }
-    offset
+    let schema = Schema { fields, name };
+    Ok(Self {
+      data_block_offset,
+      schema,
+    })
   }
 }
 
 #[cfg(test)]
+
 mod tests {
   use super::*;
   use crate::FieldKind;
-  
+
   fn persist_kind(kind: FieldKind) -> Vec<u8> {
     let mut buf = io::Cursor::new(vec![]);
     kind.persist(&mut buf).unwrap();
@@ -147,11 +171,11 @@ mod tests {
     use std::io::Cursor;
     assert_eq!(
       FieldKind::from_persisted(&mut Cursor::new(&[1, 4])).unwrap(),
-      (2, FieldKind::Number(4))
+      FieldKind::Number(4)
     );
     assert_eq!(
       FieldKind::from_persisted(&mut Cursor::new(&[2, 0, 0, 0, 0, 0, 0, 0, 5])).unwrap(),
-      (9, FieldKind::Blob(5))
+      FieldKind::Blob(5)
     );
   }
 
@@ -165,14 +189,23 @@ mod tests {
 
   #[test]
   fn persist_schema_with_number() {
-    let schema = Schema {
-      name: "foo".into(),
-      fields: vec![Field::new(FieldKind::Number(8), "id".into()).unwrap()],
+    let schema = OnDiskSchema {
+      schema: Schema {
+        name: "foo".into(),
+        fields: vec![
+          Field::new(FieldKind::Number(8), "id".into()).unwrap(),
+          Field::new(FieldKind::Number(8), "id2".into()).unwrap(),
+          Field::new(FieldKind::Number(8), "id3".into()).unwrap(),
+          Field::new(FieldKind::Number(8), "id4".into()).unwrap(),
+          Field::new(FieldKind::Number(8), "id5".into()).unwrap(),
+        ],
+      },
+      data_block_offset: 128,
     };
     let mut disk = io::Cursor::new(vec![]);
     schema.persist(&mut disk).unwrap();
     disk.set_position(0);
-    let revived_schema = Schema::from_persisted(&mut disk).unwrap();
+    let revived_schema = OnDiskSchema::from_persisted(&mut disk).unwrap();
     assert_eq!(schema, revived_schema);
   }
 }

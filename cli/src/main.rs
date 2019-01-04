@@ -31,10 +31,10 @@ fn main() -> Result<(), schema::SchemaError> {
         "the_name".into(),
         vec![
           Field::new(FieldKind::Blob(10), "id".into())?,
-          Field::new(FieldKind::Blob(10), "id2".into())?,
-          Field::new(FieldKind::Blob(10), "id3".into())?,
-          Field::new(FieldKind::Blob(10), "id4".into())?,
-          Field::new(FieldKind::Blob(10), "id5".into())?,
+          Field::new(FieldKind::Blob(11), "id1".into())?,
+          Field::new(FieldKind::Blob(12), "id12".into())?,
+          Field::new(FieldKind::Blob(13), "id123".into())?,
+          Field::new(FieldKind::Blob(14), "id1234".into())?,
         ],
       ))
       .expect("Error creating table");

@@ -1,6 +1,6 @@
 use crate::{Block, BlockDisk};
 use log::debug;
-use schema::Schema;
+use schema::{OnDiskSchema, Schema};
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use std::io::{self, Read, Seek, Write};
@@ -89,33 +89,34 @@ impl<T: Disk> Database<T> {
 
     let mut existing_schema = {
       let mut reader = BlockDisk::new(self, block)?;
-      Schema::read_tables(&mut reader)?
+      OnDiskSchema::read_tables(&mut reader)?
     };
-    existing_schema.push(schema);
+    let data_block = self.allocate_block()?;
+    existing_schema.push(OnDiskSchema::new(data_block.meta().offset(), schema));
     self.disk.seek(io::SeekFrom::Start(schema_block_offset))?;
 
     let block = Block::from_disk(schema_block_offset, self.meta.block_size(), &mut self.disk)?;
 
     let mut writer = BlockDisk::new(self, block)?;
-    Schema::write_tables(&existing_schema, &mut writer)?;
+    OnDiskSchema::write_tables(&existing_schema, &mut writer)?;
 
     Ok(())
   }
 
-  pub fn schema(&mut self) -> Result<Vec<Schema>, schema::SchemaError> {
+  pub fn schema(&mut self) -> Result<Vec<OnDiskSchema>, schema::SchemaError> {
     let schema_block_offset = self.meta.schema_block_offset;
     self.disk.seek(io::SeekFrom::Start(schema_block_offset))?;
     let block =
       crate::Block::from_disk(schema_block_offset, self.meta.block_size(), &mut self.disk)?;
     let mut reader = crate::BlockDisk::new(self, block)?;
-    Schema::read_tables(&mut reader)
+    OnDiskSchema::read_tables(&mut reader)
   }
 
   /// Initializes a new database on the provided disk
   /// There should be no information on the provided disk
   pub fn new(mut disk: T) -> io::Result<Self> {
     // version 1, block size of 2048
-    let block_size_exp = 11 as u8;
+    let block_size_exp = 6 as u8;
     let version = 1;
     let block_size = 2u64.pow(block_size_exp as u32);
     // create a new root block
@@ -178,12 +179,19 @@ mod tests {
     );
     let mut expected_tables = vec![];
 
-    for _ in 0..100 {
+    for _i in 0..100 {
       // at each iteration, add the table again. Then re-read the tables.
       // they should match
       database.create_table(schema.clone())?;
       expected_tables.push(schema.clone());
-      assert_eq!(database.schema()?, expected_tables);
+      // value of data_block_offset is an impl detail, so we compare
+      // the underlying schemas instead
+      let schemas = database
+        .schema()?
+        .into_iter()
+        .map(|ondiskschema: OnDiskSchema| ondiskschema.schema().clone())
+        .collect::<Vec<_>>();
+      assert_eq!(schemas, expected_tables);
     }
     Ok(())
   }

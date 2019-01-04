@@ -24,34 +24,27 @@ impl Field {
     Ok(Field { kind, name })
   }
 
-  pub(crate) fn persist(&self, disk: &mut impl Write) -> Result<usize, SchemaError> {
-    /*
-     * Format is:
-     * name_len(u16) name kind
-     */
+  pub(crate) fn persist(&self, disk: &mut impl Write) -> Result<(), SchemaError> {
     let name_buf = self.name.as_bytes();
-    // writing into a vec never fails
     disk.write_u16::<BigEndian>(name_buf.len() as u16)?;
 
     disk.write_all(name_buf)?;
-    let kind_len = self.kind.persist(disk)?;
+    self.kind.persist(disk)?;
 
-    Ok(2 + name_buf.len() + kind_len)
+    Ok(())
   }
   /// Returns (num bytes read, Field)
-  pub(crate) fn from_persisted(disk: &mut impl Read) -> Result<(usize, Field), SchemaError> {
+  pub(crate) fn from_persisted(disk: &mut impl Read) -> Result<Field, SchemaError> {
     let name_len = disk.read_u16::<BigEndian>()?;
-
+    log::debug!("Reading field");
+    log::debug!("-> name_len is {}", name_len);
     let mut name = vec![0; name_len as usize];
     disk.read_exact(&mut name)?;
-    let (kind_read, kind) = FieldKind::from_persisted(disk)?;
-    Ok((
-      2 + name_len as usize + kind_read,
-      Field {
-        name: String::from_utf8(name)?,
-        kind,
-      },
-    ))
+    let name = String::from_utf8(name)?;
+    log::debug!("-> Name is {}", name);
+    let kind = FieldKind::from_persisted(disk)?;
+    log::debug!("-> FieldKind is {:?}", kind);
+    Ok(Field { name, kind })
   }
 
   pub fn kind(&self) -> &FieldKind {
@@ -101,42 +94,41 @@ impl FieldKind {
     }
   }
 
-  pub(crate) fn persist(&self, disk: &mut impl Write) -> Result<usize, SchemaError> {
+  pub(crate) fn persist(&self, disk: &mut impl Write) -> Result<(), SchemaError> {
     match self {
       FieldKind::Number(n) => {
-        disk.write_all(&[Self::NUMBER_TAG])?;
+        disk.write_u8(Self::NUMBER_TAG)?;
         disk.write_u8(*n)?;
-        Ok(2)
       }
       FieldKind::Blob(n) => {
-        disk.write(&[Self::BLOB_TAG])?;
+        disk.write_u8(Self::BLOB_TAG)?;
         disk.write_u64::<BigEndian>(*n)?;
-        Ok(9)
       }
       FieldKind::Str(n) => {
-        disk.write(&[Self::STR_TAG])?;
+        disk.write_u8(Self::STR_TAG)?;
         disk.write_u64::<BigEndian>(*n)?;
-        Ok(9)
       }
-    }
+    };
+    Ok(())
   }
 
   /// The tuple is (num_bytes_we_read, Field)
-  pub(crate) fn from_persisted(disk: &mut impl Read) -> Result<(usize, FieldKind), SchemaError> {
+  pub(crate) fn from_persisted(disk: &mut impl Read) -> Result<FieldKind, SchemaError> {
     let tag = disk.read_u8()?;
+    log::debug!("-> FieldKind Tag is {}", tag);
 
     match tag {
       Self::NUMBER_TAG => {
         let size = disk.read_u8()?;
-        Ok((2, FieldKind::Number(size)))
+        Ok(FieldKind::Number(size))
       }
       Self::BLOB_TAG => {
         let size = disk.read_u64::<BigEndian>()?;
-        Ok((9, FieldKind::Blob(size)))
+        Ok(FieldKind::Blob(size))
       }
       Self::STR_TAG => {
         let size = disk.read_u64::<BigEndian>()?;
-        Ok((9, FieldKind::Str(size)))
+        Ok(FieldKind::Str(size))
       }
       unknown => return Err(SchemaError::UnknownFieldType(unknown)),
     }
