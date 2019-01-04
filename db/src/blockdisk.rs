@@ -1,10 +1,10 @@
-use std::io::{self, Read, Seek, Write};
-
 use crate::Block;
+use std::io;
 
-pub trait BlockAllocator: Read + Write + Seek {
+pub trait BlockAllocator {
   fn allocate_block(&mut self) -> io::Result<Block>;
   fn read_block(&mut self, offset: u64) -> io::Result<Block>;
+  fn write_block(&mut self, block: &Block) -> io::Result<()>;
 }
 
 #[derive(Debug)]
@@ -35,7 +35,7 @@ impl<'a, D: BlockAllocator> BlockDisk<'a, D> {
       None => {
         let next_block = self.disk.allocate_block()?;
         current_block.set_next_block(Some(next_block.meta().offset()));
-        current_block.persist(&mut self.disk)?;
+        self.disk.write_block(current_block)?;
         self.blocks.push(next_block);
         Ok(())
       }
@@ -88,7 +88,8 @@ impl<'a, D: BlockAllocator> io::Read for BlockDisk<'a, D> {
           if bytes_written == 0 {
             return err;
           }
-          current_block.persist(&mut self.disk)?;
+          self.disk.write_block(current_block)?;
+
           return Ok(bytes_written as usize);
         }
       };
@@ -115,7 +116,7 @@ impl<'a, D: BlockAllocator> io::Write for BlockDisk<'a, D> {
         Ok(bytes_written) => {
           self.current_offset += bytes_written as u64;
           buf = &buf[bytes_written..];
-          current_block.persist(&mut self.disk)?;
+          self.disk.write_block(current_block)?;
         }
         Err(ref err) if err.kind() == io::ErrorKind::UnexpectedEof => {
           // We will always be able to write an entire blocks worth of bytes. Unless the buf is empty.
@@ -128,7 +129,7 @@ impl<'a, D: BlockAllocator> io::Write for BlockDisk<'a, D> {
           if bytes_written_total == 0 {
             return err;
           }
-          current_block.persist(&mut self.disk)?;
+          self.disk.write_block(current_block)?;
 
           return Ok(bytes_written_total as usize);
         }
@@ -172,7 +173,7 @@ impl<'a, D: BlockAllocator> io::Seek for BlockDisk<'a, D> {
 mod tests {
   use super::*;
   use crate::inmemorydb::InMemoryDatabase;
-  use std::io;
+  use std::io::{self, Read, Seek, Write};
   #[test]
   fn test_blockdisk_io() -> io::Result<()> {
     let mut db = InMemoryDatabase::new(io::Cursor::new(vec![0; 128]));

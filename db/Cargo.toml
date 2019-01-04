@@ -9,4 +9,3 @@ schema = { path = "../schema" }
 byteorder = "1.2"
 env_logger = "0.6"
 log = "0.4"
-actix = "0.7"

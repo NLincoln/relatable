@@ -10,6 +10,7 @@ fn main() -> Result<(), schema::SchemaError> {
   }
   let op = &args[1];
   let filename = &args[2];
+
   if op == "read" {
     let mut file = fs::OpenOptions::new().read(true).open(filename)?;
     let mut database = Database::from_disk(&mut file)?;

@@ -101,6 +101,7 @@ impl<T: Disk> Database<T> {
 
     Ok(())
   }
+
   pub fn schema(&mut self) -> Result<Vec<Schema>, schema::SchemaError> {
     let schema_block_offset = self.meta.schema_block_offset;
     self.disk.seek(io::SeekFrom::Start(schema_block_offset))?;
@@ -137,27 +138,6 @@ impl<T: Disk> Database<T> {
 
 use crate::blockdisk::BlockAllocator;
 
-impl<T: Disk> io::Write for Database<T> {
-  fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-    self.disk.write(buf)
-  }
-  fn flush(&mut self) -> io::Result<()> {
-    self.disk.flush()
-  }
-}
-
-impl<T: Disk> io::Read for Database<T> {
-  fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-    self.disk.read(buf)
-  }
-}
-
-impl<T: Disk> io::Seek for Database<T> {
-  fn seek(&mut self, pos: io::SeekFrom) -> io::Result<u64> {
-    self.disk.seek(pos)
-  }
-}
-
 impl<T: Disk> BlockAllocator for Database<T> {
   fn allocate_block(&mut self) -> io::Result<Block> {
     let next_block_offset = self.meta.num_allocated_blocks * self.meta.block_size();
@@ -170,6 +150,9 @@ impl<T: Disk> BlockAllocator for Database<T> {
   }
   fn read_block(&mut self, offset: u64) -> io::Result<Block> {
     Block::from_disk(offset, self.meta.block_size(), &mut self.disk)
+  }
+  fn write_block(&mut self, block: &Block) -> io::Result<()> {
+    block.persist(&mut self.disk).map(|_| ())
   }
 }
 

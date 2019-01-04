@@ -1,34 +1,5 @@
-use crate::database::Disk;
-use actix::{Actor, Context, Message};
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use std::io::{self, Read, Seek, Write};
-
-struct BlockActor<D: Disk> {
-  disk: D,
-}
-
-impl<D: Disk + 'static> Actor for BlockActor<D> {
-  type Context = Context<Self>;
-}
-
-struct AllocateBlock;
-impl Message for AllocateBlock {
-  type Result = io::Result<Block>;
-}
-
-struct ReadBlock {
-  offset: u64,
-}
-impl Message for ReadBlock {
-  type Result = io::Result<Block>;
-}
-
-struct WriteBlock {
-  block: Block,
-}
-impl Message for WriteBlock {
-  type Result = io::Result<()>;
-}
 
 /// Meta-information about a block
 /// It is possible to create one of these
