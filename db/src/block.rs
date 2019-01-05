@@ -88,7 +88,6 @@ impl Block {
 
   pub fn persist(&self, disk: &mut (impl Write + Seek)) -> io::Result<usize> {
     use std::io::SeekFrom;
-    log::debug!("==> Persisting block @ offset {}", self.meta.offset);
     disk.seek(SeekFrom::Start(self.meta.offset))?;
 
     self.meta.persist(disk)?;
@@ -99,7 +98,10 @@ impl Block {
 
   /// Creates a new block from the given disk.
   /// Will read the entire block from the disk (i.e. blocksize bytes)
-  pub fn from_disk(offset: u64, blocksize: u64, disk: &mut impl Read) -> io::Result<Self> {
+  pub fn from_disk(offset: u64, blocksize: u64, disk: &mut (impl Read + Seek)) -> io::Result<Self> {
+    use std::io::SeekFrom;
+    disk.seek(SeekFrom::Start(offset))?;
+
     let meta = BlockMeta::new(offset, disk)?;
     let bytes_to_read = blocksize as usize - BlockMeta::size_on_disk();
     let mut buf = vec![0; bytes_to_read];
