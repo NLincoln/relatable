@@ -10,6 +10,7 @@ fn main() -> Result<(), schema::SchemaError> {
   }
   let op = &args[1];
   let filename = &args[2];
+
   if op == "read" {
     let mut file = fs::OpenOptions::new().read(true).open(filename)?;
     let mut database = Database::from_disk(&mut file)?;
@@ -30,10 +31,10 @@ fn main() -> Result<(), schema::SchemaError> {
         "the_name".into(),
         vec![
           Field::new(FieldKind::Blob(10), "id".into())?,
-          Field::new(FieldKind::Blob(10), "id2".into())?,
-          Field::new(FieldKind::Blob(10), "id3".into())?,
-          Field::new(FieldKind::Blob(10), "id4".into())?,
-          Field::new(FieldKind::Blob(10), "id5".into())?,
+          Field::new(FieldKind::Blob(11), "id1".into())?,
+          Field::new(FieldKind::Blob(12), "id12".into())?,
+          Field::new(FieldKind::Blob(13), "id123".into())?,
+          Field::new(FieldKind::Blob(14), "id1234".into())?,
         ],
       ))
       .expect("Error creating table");
@@ -52,6 +53,59 @@ fn main() -> Result<(), schema::SchemaError> {
     let mut file = fs::OpenOptions::new().read(true).open(filename)?;
     let database = Database::from_disk(&mut file)?;
     println!("{:?}", database);
+  } else if op == "init-table" {
+    let mut file = fs::OpenOptions::new()
+      .read(true)
+      .write(true)
+      .truncate(false)
+      .open(filename)?;
+
+    let mut database = Database::from_disk(&mut file)?;
+    database
+      .create_table(Schema::from_fields(
+        "users".into(),
+        vec![
+          Field::new(FieldKind::Number(8), "id".into())?,
+          Field::new(FieldKind::Str(20), "username".into())?,
+        ],
+      ))
+      .unwrap();
+  } else if op == "add-row" {
+    let mut file = fs::OpenOptions::new()
+      .read(true)
+      .write(true)
+      .truncate(false)
+      .open(filename)?;
+
+    let mut database = Database::from_disk(&mut file)?;
+    database
+      .add_row(
+        "users",
+        vec![
+          schema::OwnedRowCell::Number { value: 1, size: 8 },
+          schema::OwnedRowCell::Str {
+            value: "nlincoln".into(),
+            max_size: 20,
+          },
+        ],
+      )
+      .unwrap();
+  } else if op == "read-table" {
+    let mut file = fs::OpenOptions::new()
+      .read(true)
+      .write(true)
+      .truncate(false)
+      .open(filename)?;
+
+    let mut database = Database::from_disk(&mut file)?;
+    let rows = database.read_table("users").unwrap();
+    let schema = database.get_table("users").unwrap();
+    if rows.is_empty() {
+      println!("No rows!");
+    }
+    for row in rows {
+      println!("{:?}", row.as_cells(schema.schema()));
+    }
   }
 
   Ok(())
