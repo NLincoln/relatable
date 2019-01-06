@@ -254,14 +254,20 @@ mod tests {
         max_size: 20,
       },
     ];
-    // 3rd block should have 2 rows: the just inserted row, and the new sentinal
-    database.add_row("users", rows.clone())?;
+    let mut expected_rows = vec![];
+    for _i in 0..100 {
+      database.add_row("users", rows.clone())?;
+      expected_rows.push(rows.clone());
 
-    let all_rows = database.read_table("users")?[0]
-      .clone()
-      .into_cells(&schema)?;
+      let all_rows = database
+        .read_table("users")?
+        .clone()
+        .into_iter()
+        .map(|row| row.into_cells(&schema).unwrap())
+        .collect::<Vec<_>>();
 
-    assert_eq!(all_rows, rows);
+      assert_eq!(all_rows, expected_rows);
+    }
 
     Ok(())
   }
