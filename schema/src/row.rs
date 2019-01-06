@@ -55,7 +55,7 @@ impl RowMeta {
     Ok(())
   }
   fn from_persisted(disk: &mut impl Read) -> Result<Self, RowCellError> {
-    let is_last_row = match disk.read_u8()? {
+    let is_last_row = match disk.read_u16::<BigEndian>()? {
       0 => false,
       1 => true,
       _ => return Err(RowCellError::InvalidRowMeta),
@@ -222,7 +222,14 @@ impl OwnedRowCell {
       OwnedRowCell::Str { value, max_size } => {
         disk.write_u64::<BigEndian>(value.len() as u64)?;
         disk.write_all(value.as_bytes())?;
-        disk.write_all(&vec![0; *max_size as usize - value.len()])?;
+
+        let remaining_buf_size = *max_size as usize - value.len();
+        disk.write_all(&vec![0; remaining_buf_size])?;
+
+        assert_eq!(
+          *max_size as usize,
+          value.as_bytes().len() + remaining_buf_size
+        );
       }
     };
     Ok(())
