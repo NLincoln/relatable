@@ -28,6 +28,9 @@ impl BlockMeta {
   pub fn offset(&self) -> u64 {
     self.offset
   }
+  pub fn size(&self) -> u64 {
+    self.size
+  }
   pub fn next_block(&self) -> Option<u64> {
     self.next_block
   }
@@ -90,6 +93,8 @@ impl Block {
     use std::io::SeekFrom;
     disk.seek(SeekFrom::Start(self.meta.offset))?;
 
+    assert!(self.meta.size <= self.data.len() as u64);
+
     self.meta.persist(disk)?;
     disk.write_all(&self.data)?;
 
@@ -137,7 +142,14 @@ pub struct BlockDiskView<'a> {
 
 impl<'a> BlockDiskView<'a> {
   fn is_at_end_of_block(&self) -> bool {
-    self.current_offset as usize >= self.block.data.len()
+    let result = self.current_offset as usize >= self.block.data.len();
+    if result {
+      log::debug!(
+        "At the end of the block. Block Offset {}",
+        self.block.meta.offset
+      );
+    }
+    result
   }
   fn end_of_block(&self) -> io::Result<()> {
     if self.is_at_end_of_block() {
@@ -154,11 +166,19 @@ impl<'a> BlockDiskView<'a> {
 }
 impl<'a> io::Read for BlockDiskView<'a> {
   fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+    log::debug!("Reading buffer of size {}", buf.len());
+    log::debug!(
+      "-> Offset {}, Size {}, Max-Size {}",
+      self.current_offset,
+      self.block.meta.size,
+      self.block.data.len()
+    );
     self.end_of_block()?;
 
     for i in 0..buf.len() {
       let offset = self.current_offset as usize;
       if self.is_at_end_of_block() {
+        log::debug!("-> Reached end of block early. Read {}", i);
         return Ok(i);
       }
       buf[i] = self.block.data[offset];
@@ -168,20 +188,27 @@ impl<'a> io::Read for BlockDiskView<'a> {
   }
 }
 
+// borrowed from io::Cursor source code
+fn slice_write(pos_mut: &mut u64, slice: &mut [u8], buf: &[u8]) -> io::Result<usize> {
+  let pos = std::cmp::min(*pos_mut, slice.len() as u64);
+  let amt = (&mut slice[(pos as usize)..]).write(buf)?;
+  *pos_mut += amt as u64;
+  Ok(amt)
+}
+
 impl<'a> io::Write for BlockDiskView<'a> {
   fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-    self.end_of_block()?;
+    log::debug!("Writing buffer of size {}", buf.len());
+    log::debug!(
+      "-> Offset {}, Size {}, Max-Size: {}",
+      self.current_offset,
+      self.block.meta.size,
+      self.block.data.len()
+    );
 
-    for i in 0..buf.len() {
-      let offset = self.current_offset as usize;
-      if self.is_at_end_of_block() {
-        return Ok(i);
-      }
-      self.block.data[offset] = buf[i];
-      self.block.meta.size += 1;
-      self.current_offset += 1;
-    }
-    Ok(buf.len())
+    let bytes_written = slice_write(&mut self.current_offset, self.block.data.as_mut(), buf)?;
+    self.block.meta.size = std::cmp::max(self.block.meta.size, self.current_offset);
+    return Ok(bytes_written);
   }
   fn flush(&mut self) -> io::Result<()> {
     Ok(())

@@ -73,8 +73,76 @@ impl DatabaseMeta {
   }
 }
 
+#[derive(Debug)]
+pub enum DatabaseError {
+  TableNotFound { table_name: String },
+  RowCellError(schema::RowCellError),
+  Schema(schema::SchemaError),
+  Io(io::Error),
+  FieldError(schema::FieldError),
+}
+
+impl From<io::Error> for DatabaseError {
+  fn from(err: io::Error) -> Self {
+    DatabaseError::Io(err)
+  }
+}
+
+impl From<schema::SchemaError> for DatabaseError {
+  fn from(err: schema::SchemaError) -> Self {
+    DatabaseError::Schema(err)
+  }
+}
+
+impl From<schema::RowCellError> for DatabaseError {
+  fn from(err: schema::RowCellError) -> Self {
+    DatabaseError::RowCellError(err)
+  }
+}
+
+impl From<schema::FieldError> for DatabaseError {
+  fn from(err: schema::FieldError) -> Self {
+    DatabaseError::FieldError(err)
+  }
+}
+
 impl<T: Disk> Database<T> {
-  pub fn create_table(&mut self, schema: Schema) -> Result<(), schema::SchemaError> {
+  pub fn get_table(&mut self, table_name: &str) -> Result<OnDiskSchema, DatabaseError> {
+    self
+      .schema()?
+      .into_iter()
+      .find(|owned_table| owned_table.schema().name() == table_name)
+      .ok_or_else(|| DatabaseError::TableNotFound {
+        table_name: table_name.into(),
+      })
+  }
+  pub fn add_row(
+    &mut self,
+    table: &str,
+    row: Vec<schema::OwnedRowCell>,
+  ) -> Result<(), DatabaseError> {
+    debug!("Adding row to table");
+    let schema = self.get_table(table)?;
+
+    let mut data_blockdisk = BlockDisk::new(self, schema.data_block_offset())?;
+    unsafe { schema::Row::insert_row(row, &mut data_blockdisk, schema.schema())? };
+
+    Ok(())
+  }
+
+  pub fn read_table(&mut self, table_name: &str) -> Result<Vec<schema::Row>, DatabaseError> {
+    let table = self.get_table(table_name)?;
+    let mut blockdisk = BlockDisk::new(self, table.data_block_offset())?;
+    let mut rows = vec![];
+    for row in schema::Row::row_iterator(&mut blockdisk, table.schema())? {
+      log::debug!("Row was read");
+      let row = row?;
+      rows.push(row);
+    }
+    Ok(rows)
+  }
+
+  pub fn create_table(&mut self, schema: Schema) -> Result<(), DatabaseError> {
     // Alright so the first thing we need to do is go find the
     // schema table and add this entry to it.
     debug!("Creating Table");
@@ -85,30 +153,27 @@ impl<T: Disk> Database<T> {
     let schema_block_offset = self.meta.schema_block_offset;
 
     self.disk.seek(io::SeekFrom::Start(schema_block_offset))?;
-    let block = Block::from_disk(schema_block_offset, self.meta.block_size(), &mut self.disk)?;
-
-    let mut existing_schema = {
-      let mut reader = BlockDisk::new(self, block)?;
-      OnDiskSchema::read_tables(&mut reader)?
-    };
     let data_block = self.allocate_block()?;
-    existing_schema.push(OnDiskSchema::new(data_block.meta().offset(), schema));
-    self.disk.seek(io::SeekFrom::Start(schema_block_offset))?;
+    let data_block_offset = data_block.meta().offset();
+    {
+      let mut data_blockdisk = BlockDisk::from_block(self, data_block)?;
+      debug!("Initializing data block, offset {}", data_block_offset);
+      unsafe { schema::Row::init_table(&schema, &mut data_blockdisk)? };
+    }
 
-    let block = Block::from_disk(schema_block_offset, self.meta.block_size(), &mut self.disk)?;
+    let mut blockdisk = BlockDisk::new(self, schema_block_offset)?;
+    let mut existing_schema = OnDiskSchema::read_tables(&mut blockdisk)?;
+    blockdisk.seek(io::SeekFrom::Start(0))?;
+    existing_schema.push(OnDiskSchema::new(data_block_offset, schema));
 
-    let mut writer = BlockDisk::new(self, block)?;
-    OnDiskSchema::write_tables(&existing_schema, &mut writer)?;
+    OnDiskSchema::write_tables(&existing_schema, &mut blockdisk)?;
 
     Ok(())
   }
 
   pub fn schema(&mut self) -> Result<Vec<OnDiskSchema>, schema::SchemaError> {
     let schema_block_offset = self.meta.schema_block_offset;
-    self.disk.seek(io::SeekFrom::Start(schema_block_offset))?;
-    let block =
-      crate::Block::from_disk(schema_block_offset, self.meta.block_size(), &mut self.disk)?;
-    let mut reader = crate::BlockDisk::new(self, block)?;
+    let mut reader = crate::BlockDisk::new(self, schema_block_offset)?;
     OnDiskSchema::read_tables(&mut reader)
   }
 
@@ -142,6 +207,7 @@ use crate::blockdisk::BlockAllocator;
 impl<T: Disk> BlockAllocator for Database<T> {
   fn allocate_block(&mut self) -> io::Result<Block> {
     let next_block_offset = self.meta.num_allocated_blocks * self.meta.block_size();
+    log::debug!("Allocating block at offset {}", next_block_offset);
     self.disk.seek(io::SeekFrom::Start(next_block_offset))?;
     let block = Block::new(next_block_offset, self.meta.block_size());
     self.meta.num_allocated_blocks += 1;
@@ -150,9 +216,11 @@ impl<T: Disk> BlockAllocator for Database<T> {
     Ok(block)
   }
   fn read_block(&mut self, offset: u64) -> io::Result<Block> {
+    log::debug!("Reading block at offset {}", offset);
     Block::from_disk(offset, self.meta.block_size(), &mut self.disk)
   }
   fn write_block(&mut self, block: &Block) -> io::Result<()> {
+    log::debug!("Writing block at offset {}", block.meta().offset());
     block.persist(&mut self.disk).map(|_| ())
   }
 }
@@ -161,10 +229,44 @@ impl<T: Disk> BlockAllocator for Database<T> {
 mod tests {
   use super::*;
   use schema::SchemaError;
-  #[test]
-  fn test_adding_a_bunch_of_tables() -> Result<(), SchemaError> {
-    env_logger::init();
 
+  #[test]
+  fn test_adding_rows() -> Result<(), DatabaseError> {
+    use schema::{Field, FieldKind};
+
+    // Disk should have two blocks: one for the dbmeta and an empty schema block
+    let mut database = Database::new(io::Cursor::new(vec![]))?;
+    let schema = Schema::from_fields(
+      "users".into(),
+      vec![
+        Field::new(FieldKind::Number(8), "id".into()).map_err(|err| SchemaError::from(err))?,
+        Field::new(FieldKind::Str(20), "username".into()).map_err(|err| SchemaError::from(err))?,
+      ],
+    );
+    use schema::OwnedRowCell;
+
+    // Disk should have 3 blocks: dbmeta, schema block with one table, and a data block with one empty row
+    database.create_table(schema.clone())?;
+    let rows = vec![
+      OwnedRowCell::Number { value: 1, size: 8 },
+      OwnedRowCell::Str {
+        value: "nlincoln".into(),
+        max_size: 20,
+      },
+    ];
+    // 3rd block should have 2 rows: the just inserted row, and the new sentinal
+    database.add_row("users", rows.clone())?;
+
+    let all_rows = database.read_table("users")?[0]
+      .clone()
+      .into_cells(&schema)?;
+
+    assert_eq!(all_rows, rows);
+
+    Ok(())
+  }
+  #[test]
+  fn test_adding_a_bunch_of_tables() -> Result<(), DatabaseError> {
     use schema::{Field, FieldKind};
     let mut database = Database::new(io::Cursor::new(vec![]))?;
     let schema = Schema::from_fields(

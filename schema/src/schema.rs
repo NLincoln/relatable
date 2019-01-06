@@ -56,6 +56,13 @@ impl Schema {
   pub fn fields(&self) -> &[Field] {
     &self.fields
   }
+  pub fn sizeof_row(&self) -> usize {
+    let mut offset = 0;
+    for field in &self.fields {
+      offset += field.kind().size()
+    }
+    offset
+  }
 
   pub(crate) fn offset_of(&self, field_index: usize) -> usize {
     let mut offset = 0;
@@ -85,6 +92,9 @@ impl OnDiskSchema {
   }
   pub fn schema(&self) -> &Schema {
     &self.schema
+  }
+  pub fn data_block_offset(&self) -> u64 {
+    self.data_block_offset
   }
 
   pub fn write_tables(tables: &[OnDiskSchema], disk: &mut impl Write) -> Result<(), SchemaError> {
