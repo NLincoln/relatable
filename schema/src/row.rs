@@ -1,6 +1,5 @@
-use crate::{FieldKind, Schema};
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
-use std::fmt::{self, Display};
+use crate::{Field, FieldKind, Schema};
 use std::io::{self, Read, Seek, Write};
 use std::str::Utf8Error;
 pub struct RowIterator<'a, 'b, D: Read> {
@@ -181,13 +180,13 @@ pub enum OwnedRowCell {
 impl<'a> From<RowCell<'a>> for OwnedRowCell {
   fn from(cell: RowCell<'a>) -> OwnedRowCell {
     match cell {
-      RowCell::Blob(data) => OwnedRowCell::Blob(data.into()),
+      RowCell::Blob(data) => OwnedRowCell::Blob(data.to_vec()),
       RowCell::Number { value, size } => OwnedRowCell::Number {
         value: value,
         size: size,
       },
       RowCell::Str { value, max_size } => OwnedRowCell::Str {
-        value: value.into(),
+        value: value.to_string(),
         max_size: max_size,
       },
     }
@@ -195,6 +194,74 @@ impl<'a> From<RowCell<'a>> for OwnedRowCell {
 }
 
 impl OwnedRowCell {
+  pub fn from_ast_expr<'a>(ast: &parser::Expr<'a>) -> Option<OwnedRowCell> {
+    use parser::{Expr, LiteralValue};
+    let literal = match ast {
+      Expr::ColumnIdent(_) => return None,
+      Expr::LiteralValue(val) => val,
+    };
+    match literal {
+      LiteralValue::NumericLiteral(value) => Some(OwnedRowCell::Number {
+        value: *value,
+        size: 8,
+      }),
+      LiteralValue::StringLiteral(value) => Some(OwnedRowCell::Str {
+        max_size: value.len() as u64,
+        value: value.to_string(),
+      }),
+      LiteralValue::BlobLiteral(value) => match hex::decode(value.as_bytes()) {
+        Ok(buf) => Some(OwnedRowCell::Blob(buf)),
+        Err(_) => None,
+      },
+      LiteralValue::Null => None,
+    }
+  }
+  pub fn coerce_to(mut self, field: &Field) -> Option<OwnedRowCell> {
+    use std::cmp::{Ord, Ordering};
+    match &mut self {
+      OwnedRowCell::Blob(data) => {
+        let needed_len = match field.kind() {
+          FieldKind::Blob(len) => len,
+          _ => return None,
+        };
+
+        let data_len = data.len() as u64;
+        match data_len.cmp(needed_len) {
+          Ordering::Equal => Some(self),
+          Ordering::Greater => {
+            data.truncate(*needed_len as usize);
+            Some(self)
+          }
+          Ordering::Less => {
+            let padding_bytes = *needed_len - data_len;
+            let mut padding = vec![0; padding_bytes as usize];
+            data.append(&mut padding);
+            Some(self)
+          }
+        }
+      }
+      OwnedRowCell::Number { size, .. } => match field.kind() {
+        // it's all i64's under the hood...
+        FieldKind::Number(schema_size) => {
+          *size = *schema_size;
+          Some(self)
+        }
+        _ => None,
+      },
+      OwnedRowCell::Str { max_size, .. } => {
+        // padding / truncating happens when we write the string
+        // which is convenient, because we only need to make the
+        // size args match
+        let max_len = match field.kind() {
+          FieldKind::Str(len) => len,
+          _ => return None,
+        };
+        *max_size = *max_len;
+        Some(self)
+      }
+    }
+  }
+
   pub fn as_rowcell<'a>(&'a self) -> RowCell<'a> {
     match self {
       OwnedRowCell::Number { value, size } => RowCell::Number {

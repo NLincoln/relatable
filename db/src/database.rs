@@ -1,6 +1,7 @@
 use crate::{Block, BlockDisk};
 use log::debug;
 use schema::{OnDiskSchema, Schema};
+use std::collections::BTreeMap;
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use std::io::{self, Read, Seek, Write};
@@ -80,6 +81,10 @@ pub enum DatabaseError {
   Schema(schema::SchemaError),
   Io(io::Error),
   FieldError(schema::FieldError),
+  // basically a catch all because I'm lazy
+  // todo -> make proper enumeriations for all
+  // these cases
+  Other(String),
 }
 
 impl From<io::Error> for DatabaseError {
@@ -106,14 +111,143 @@ impl From<schema::FieldError> for DatabaseError {
   }
 }
 
+#[derive(Debug)]
+pub enum DatabaseQueryError<'a> {
+  InternalError(DatabaseError),
+  AstError(parser::AstError<'a>),
+}
+
+impl<'a> From<DatabaseError> for DatabaseQueryError<'a> {
+  fn from(err: DatabaseError) -> Self {
+    DatabaseQueryError::InternalError(err)
+  }
+}
+impl<'a> From<parser::AstError<'a>> for DatabaseQueryError<'a> {
+  fn from(err: parser::AstError<'a>) -> Self {
+    DatabaseQueryError::AstError(err)
+  }
+}
+
 impl<T: Disk> Database<T> {
+  pub fn execute_query<'a>(
+    &mut self,
+    query: &'a str,
+  ) -> Result<Vec<Vec<schema::Row>>, DatabaseQueryError<'a>> {
+    let ast = parser::process_query(query)?;
+    let mut result = Vec::with_capacity(ast.len());
+    for statement in ast.iter() {
+      result.push(self.process_statement(statement)?);
+    }
+    Ok(result)
+  }
+  fn process_statement<'a>(
+    &mut self,
+    ast: &parser::Statement<'a>,
+  ) -> Result<Vec<schema::Row>, DatabaseError> {
+    use parser::Statement;
+    match ast {
+      Statement::CreateTable(create_table_statement) => {
+        // does this table already exist?
+        if let Ok(_) = self.get_table(create_table_statement.table_name.text()) {
+          return Err(DatabaseError::Other(format!(
+            "Could not create table {}: table with the same name already exists",
+            create_table_statement.table_name.text()
+          )));
+        }
+
+        let mut schema_fields = vec![];
+        for column_def in create_table_statement.column_defs.iter() {
+          schema_fields.push(schema::Field::from_column_def(column_def)?);
+        }
+
+        let schema = schema::Schema::from_fields(
+          create_table_statement.table_name.text().to_string(),
+          schema_fields,
+        );
+        self.create_table(schema)?;
+        return Ok(vec![]);
+      }
+      Statement::Insert(insert_statement) => {
+        use parser::InsertStatementValues as Values;
+        let disk_schema = self.get_table(insert_statement.table.text())?;
+        let schema = &disk_schema.schema();
+
+        if schema.fields().len() != insert_statement.columns.len() {
+          return Err(DatabaseError::Other(format!("Could not insert into {}: Number of columns specified does not match number of columns in table.", insert_statement.table.text())));
+        }
+        let mut mapping: BTreeMap<usize, usize> = Default::default();
+        'col: for (col_idx, column) in insert_statement.columns.iter().enumerate() {
+          for (field_idx, field) in schema.fields().iter().enumerate() {
+            if column.text() == field.name() {
+              mapping.insert(field_idx, col_idx);
+              continue 'col;
+            }
+          }
+          return Err(DatabaseError::Other(format!(
+            "Could not insert into {}: Column {} was not found in table",
+            insert_statement.table.text(),
+            column.text()
+          )));
+        }
+
+        match &insert_statement.values {
+          Values::SingleRow(row) => {
+            self.insert_ast_row(schema, &row, &mapping)?;
+            Ok(vec![])
+          }
+          Values::MultipleRows(rows) => {
+            for row in rows.iter() {
+              self.insert_ast_row(schema, &row, &mapping)?;
+            }
+            Ok(vec![])
+          }
+        }
+      }
+      Statement::Select(select_statement) => {
+        // I'm just going to go ahead and say that nothing except the barest
+        // select * from table queries are allowed. Too much complexity for right here.
+        // I think next I'll work on a Table abstraction
+        match &select_statement.table {
+          Some(table) => self.read_table(table.text()),
+          None => Ok(vec![]),
+        }
+      }
+    }
+  }
+
+  fn insert_ast_row<'a>(
+    &mut self,
+    schema: &schema::Schema,
+    ast: &[parser::Expr<'a>],
+    mapping: &BTreeMap<usize, usize>,
+  ) -> Result<(), DatabaseError> {
+    // We don't have defaults for columns (yet). Assert that the columns are the same length
+    // at least.
+    let mut row = vec![];
+    for i in 0..schema.fields().len() {
+      match schema::OwnedRowCell::from_ast_expr(&ast[mapping[&i]]) {
+        Some(cell) => {
+          row.push(cell);
+        }
+        None => {
+          return Err(DatabaseError::Other(format!(
+            "Could not insert into {}: Invalid Cell",
+            schema.name()
+          )))
+        }
+      }
+    }
+
+    self.add_row(schema.name(), row)?;
+    Ok(())
+  }
   pub fn get_table(&mut self, table_name: &str) -> Result<OnDiskSchema, DatabaseError> {
     self
       .schema()?
       .into_iter()
       .find(|owned_table| owned_table.schema().name() == table_name)
       .ok_or_else(|| DatabaseError::TableNotFound {
-        table_name: table_name.into(),
+        table_name: table_name.to_string(),
       })
   }
   pub fn add_row(
@@ -123,9 +257,27 @@ impl<T: Disk> Database<T> {
   ) -> Result<(), DatabaseError> {
     debug!("Adding row to table");
     let schema = self.get_table(table)?;
+    // elements in the row must be coercible to the tables schema
+    // otherwise Bad Things will happen
+    if schema.schema().fields().len() != row.len() {
+      return Err(DatabaseError::Other(format!("Could not insert into {}: The number of columns in the new row does not match the number of columns in the table", table)));
+    }
+    let mut valid_row = vec![];
+    for (cell, field) in row.into_iter().zip(schema.schema().fields().iter()) {
+      match cell.coerce_to(field) {
+        Some(field) => valid_row.push(field),
+        None => {
+          return Err(DatabaseError::Other(format!(
+            "Could not insert into {}: The data provided for column {} is invalid",
+            table,
+            field.name()
+          )))
+        }
+      }
+    }
 
     let mut data_blockdisk = BlockDisk::new(self, schema.data_block_offset())?;
-    unsafe { schema::Row::insert_row(row, &mut data_blockdisk, schema.schema())? };
+    unsafe { schema::Row::insert_row(valid_row, &mut data_blockdisk, schema.schema())? };
 
     Ok(())
   }

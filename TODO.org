@@ -1,0 +1,15 @@
+* [1/2] Query Parsing
+- [X] Create a basic parser for SQL queries
+- [ ] Typecheck that sql
+
+* RowData
+- [ ] Verify that the type of the RowCell we insert matches the schema (otherwise Bad Things will happen)
+- [ ] Default column values
+- [ ] Auto increment
+- [ ] Updating rows
+
+* Disk Format
+- [ ] Switch to a b-tree based disk format
+
+* API
+- [ ] Run queries and display results with prettytable-rs
