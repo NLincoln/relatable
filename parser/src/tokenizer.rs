@@ -243,16 +243,14 @@ impl<'a, L: Language> TokenStream<'a, L> {
   fn peek_keyword(&self) -> Option<Keyword<L::Kind>> {
     let iter = self.get_str();
     for key in self.keywords.iter() {
-      if key.is_case_sensitive {
+      if !key.is_case_sensitive {
         // Pull off key.length tokens from the iter
         if let Some(next_tokens) = iter.get(0..key.text.len()) {
-          if next_tokens.to_lowercase().as_str() == key.text {
+          if next_tokens.to_lowercase() == key.text {
             return Some(key.clone());
           }
         }
-        continue;
-      }
-      if iter.starts_with(key.text) {
+      } else if iter.starts_with(key.text) {
         return Some(key.clone());
       }
     }
@@ -407,7 +405,7 @@ mod tests {
     fn keywords() -> Vec<Keyword<Kind>> {
       vec![
         Keyword::create("var", Kind::Var),
-        Keyword::create("program", Kind::Program).set_case_sensitive(true),
+        Keyword::create("program", Kind::Program).set_case_sensitive(false),
       ]
     }
     fn punctuation() -> Vec<Punctuation<Kind>> {

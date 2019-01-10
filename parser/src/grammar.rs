@@ -13,21 +13,37 @@ pub fn parse<'a>(input: &'a str) -> ParseResult<'a, Statement<'a>> {
 
 fn statement<'a>() -> impl Parser<Input = TokenStream<'a>, Output = Statement<'a>> {
   use combine::parser::choice::choice;
-  choice((create_table_statement().map(Statement::CreateTable),))
+  choice((
+    create_table_statement().map(Statement::CreateTable),
+    select_statement().map(Statement::Select),
+    insert_statement().map(Statement::Insert),
+  ))
 }
 
 fn create_table_statement<'a>(
 ) -> impl Parser<Input = TokenStream<'a>, Output = CreateTableStatement<'a>> {
-  (token(Kind::Create), token(Kind::Table), ident()).map(|(_, _, table_name)| {
-    CreateTableStatement {
-      table_name,
-      column_defs: vec![],
-    }
-  })
+  use combine::parser::repeat::sep_by1;
+  (
+    token(Kind::Create),
+    token(Kind::Table),
+    ident(),
+    token(Kind::LeftParen),
+    sep_by1(column_def(), token(Kind::Comma)),
+    token(Kind::RightParen),
+  )
+    .map(
+      |(_, _, table_name, _, column_defs, _)| CreateTableStatement {
+        table_name,
+        column_defs,
+      },
+    )
 }
 
 fn column_def<'a>() -> impl Parser<Input = TokenStream<'a>, Output = ColumnDef<'a>> {
-  (ident(),).map(|(column_name)| ColumnDef { column_name })
+  (ident(), type_name()).map(|(column_name, type_name)| ColumnDef {
+    column_name,
+    type_name,
+  })
 }
 
 fn type_name<'a>() -> impl Parser<Input = TokenStream<'a>, Output = TypeName> {
@@ -38,13 +54,13 @@ fn type_name<'a>() -> impl Parser<Input = TokenStream<'a>, Output = TypeName> {
     optional(
       (
         token(Kind::LeftParen),
-        token(Kind::NumericLiteral),
+        numeric_literal(),
         token(Kind::RightParen),
       )
         .map(|(_, num, _)| num),
-    )
-    .map(|(name, argument)| TypeName { name, argument }),
+    ),
   )
+    .map(|(name, argument)| TypeName { name, argument })
 }
 
 fn r#type<'a>() -> impl Parser<Input = TokenStream<'a>, Output = Type> {
@@ -56,6 +72,195 @@ fn r#type<'a>() -> impl Parser<Input = TokenStream<'a>, Output = Type> {
   ))
 }
 
+fn select_statement<'a>() -> impl Parser<Input = TokenStream<'a>, Output = SelectStatement<'a>> {
+  use combine::parser::{choice::optional, repeat::sep_by1};
+
+  (
+    token(Kind::Select),
+    sep_by1(result_column(), token(Kind::Comma)),
+    optional((token(Kind::From), sep_by1(ident(), token(Kind::Comma))).map(|(_, tables)| tables)),
+  )
+    .map(|(_, columns, tables)| SelectStatement { columns, tables })
+}
+
+fn result_column<'a>() -> impl Parser<Input = TokenStream<'a>, Output = ResultColumn<'a>> {
+  use combine::parser::{
+    choice::{choice, optional},
+    combinator::attempt,
+  };
+
+  choice((
+    attempt(
+      (ident(), token(Kind::Period), token(Kind::Asterisk))
+        .map(|(ident, _, _)| ResultColumn::TableAsterisk(ident)),
+    ),
+    token(Kind::Asterisk).map(|_| ResultColumn::Asterisk),
+    (
+      expr(),
+      optional((optional(token(Kind::As)), ident()).map(|(_, alias)| alias)),
+    )
+      .map(|(value, alias)| ResultColumn::Expr { value, alias }),
+  ))
+}
+
+fn column_ident<'a>() -> impl Parser<Input = TokenStream<'a>, Output = ColumnIdent<'a>> {
+  use combine::parser::{choice::choice, combinator::attempt};
+  choice((
+    attempt(
+      (ident(), token(Kind::Period), ident()).map(|val| ColumnIdent {
+        column: val.2,
+        table: Some(val.0),
+      }),
+    ),
+    ident().map(|val| ColumnIdent {
+      column: val,
+      table: None,
+    }),
+  ))
+}
+
+#[test]
+fn test_column_ident() {
+  assert_ast(
+    column_ident(),
+    "users",
+    ColumnIdent {
+      column: Ident::new("users"),
+      table: None,
+    },
+  );
+  assert_ast(
+    column_ident(),
+    "users.username",
+    ColumnIdent {
+      column: Ident::new("username"),
+      table: Some(Ident::new("users")),
+    },
+  );
+}
+
+fn expr<'a>() -> impl Parser<Input = TokenStream<'a>, Output = Expr<'a>> {
+  use combine::parser::choice::choice;
+  choice((
+    literal_value().map(Expr::LiteralValue),
+    column_ident().map(Expr::ColumnIdent),
+  ))
+}
+
+fn literal_value<'a>() -> impl Parser<Input = TokenStream<'a>, Output = LiteralValue<'a>> {
+  use combine::parser::choice::choice;
+  choice((
+    numeric_literal().map(LiteralValue::NumericLiteral),
+    string_literal().map(LiteralValue::StringLiteral),
+    blob_literal().map(LiteralValue::BlobLiteral),
+    token(Kind::Null).map(|_| LiteralValue::Null),
+  ))
+}
+
+#[test]
+fn test_literal_value() {
+  assert_ast(literal_value(), "null", LiteralValue::Null);
+  assert_ast(literal_value(), "123", LiteralValue::NumericLiteral(123));
+}
+
+fn numeric_literal<'a>() -> impl Parser<Input = TokenStream<'a>, Output = i64> {
+  token(Kind::NumericLiteral).map(|token| token.value.parse::<i64>().unwrap())
+}
+
+fn string_literal<'a>() -> impl Parser<Input = TokenStream<'a>, Output = &'a str> {
+  token(Kind::StringLiteral).map(|token| {
+    // need to strip off the leading and trailing '
+    assert!(token.value.starts_with("'"));
+    assert!(token.value.ends_with("'"));
+    token.value.trim_matches('\'')
+  })
+}
+
+#[test]
+fn test_string_literal() {
+  assert_ast(string_literal(), "'abc'", "abc");
+}
+
+fn insert_statement<'a>() -> impl Parser<Input = TokenStream<'a>, Output = InsertStatement<'a>> {
+  use combine::parser::repeat::sep_by;
+
+  (
+    (token(Kind::Insert), token(Kind::Into)),
+    ident(),
+    token(Kind::LeftParen),
+    sep_by(ident(), token(Kind::Comma)),
+    token(Kind::RightParen),
+    insert_statement_values(),
+  )
+    .map(|(_, table, _, columns, _, values)| InsertStatement {
+      table,
+      columns,
+      values,
+    })
+}
+
+fn insert_statement_values<'a>(
+) -> impl Parser<Input = TokenStream<'a>, Output = InsertStatementValues<'a>> {
+  use combine::parser::{
+    choice::choice,
+    combinator::attempt,
+    repeat::{sep_by, sep_by1},
+  };
+  let single_row = || {
+    (
+      token(Kind::LeftParen),
+      sep_by(expr(), token(Kind::Comma)),
+      token(Kind::RightParen),
+    )
+      .map(|(_, exprs, _)| exprs)
+  };
+
+  choice((
+    attempt((token(Kind::Value), single_row()))
+      .map(|(_, row)| InsertStatementValues::SingleRow(row)),
+    attempt((
+      token(Kind::Values),
+      sep_by1(single_row(), token(Kind::Comma)),
+    ))
+    .map(|(_, rows)| InsertStatementValues::MultipleRows(rows)),
+  ))
+}
+
+#[test]
+fn test_insert_statement_values() {
+  assert_ast(
+    insert_statement_values(),
+    "VALUE (1, 'a')",
+    InsertStatementValues::SingleRow(vec![
+      Expr::LiteralValue(LiteralValue::NumericLiteral(1)),
+      Expr::LiteralValue(LiteralValue::StringLiteral("a")),
+    ]),
+  );
+  assert_ast(
+    insert_statement_values(),
+    "VALUES (1, 'a'), (2, 'b')",
+    InsertStatementValues::MultipleRows(vec![
+      vec![
+        Expr::LiteralValue(LiteralValue::NumericLiteral(1)),
+        Expr::LiteralValue(LiteralValue::StringLiteral("a")),
+      ],
+      vec![
+        Expr::LiteralValue(LiteralValue::NumericLiteral(2)),
+        Expr::LiteralValue(LiteralValue::StringLiteral("b")),
+      ],
+    ]),
+  );
+}
+
+fn blob_literal<'a>() -> impl Parser<Input = TokenStream<'a>, Output = &'a str> {
+  (token(Kind::X), string_literal()).map(|(_, string)| string)
+}
+
+#[test]
+fn test_blob_literal() {
+  assert_ast(blob_literal(), "x'abc'", "abc")
+}
+
 fn ident<'a>() -> impl Parser<Input = TokenStream<'a>, Output = Ident<'a>> {
   token(Kind::Ident).map(|val| Ident::new(val.value))
 }
@@ -64,27 +269,66 @@ fn ident<'a>() -> impl Parser<Input = TokenStream<'a>, Output = Ident<'a>> {
 mod tests {
   use super::*;
 
-  fn assert_ast<'a, T: PartialEq + std::fmt::Debug>(
-    mut parser: impl Parser<Input = TokenStream<'a>, Output = T>,
-    input: &'a str,
-    expected: T,
-  ) {
-    assert_eq!(
-      parser
-        .parse_stream(&mut TokenStream::new(Sql(()), input))
-        .unwrap()
-        .0,
-      expected
-    );
-  }
-
   #[test]
   fn test_ident() {
     assert_ast(ident(), "abcd", Ident::new("abcd"));
   }
 
   #[test]
-  fn test_create_table_column_def() {}
+  fn test_select_statement() {
+    assert_ast(
+      select_statement(),
+      "select *, users.*, users.username as name, username from users",
+      SelectStatement {
+        columns: vec![
+          ResultColumn::Asterisk,
+          ResultColumn::TableAsterisk(Ident::new("users")),
+          ResultColumn::Expr {
+            value: Expr::ColumnIdent(ColumnIdent {
+              column: Ident::new("username"),
+              table: Some(Ident::new("users")),
+            }),
+            alias: Some(Ident::new("name")),
+          },
+          ResultColumn::Expr {
+            value: Expr::ColumnIdent(ColumnIdent {
+              column: Ident::new("username"),
+              table: None,
+            }),
+            alias: None,
+          },
+        ],
+        tables: Some(vec![Ident::new("users")]),
+      },
+    )
+  }
+
+  #[test]
+  fn test_create_table_column_def() {
+    assert_ast(
+      create_table_statement(),
+      "create table users ( id integer, username varchar(20) )",
+      CreateTableStatement {
+        table_name: Ident::new("users"),
+        column_defs: vec![
+          ColumnDef {
+            column_name: Ident::new("id"),
+            type_name: TypeName {
+              name: Type::Integer,
+              argument: None,
+            },
+          },
+          ColumnDef {
+            column_name: Ident::new("username"),
+            type_name: TypeName {
+              name: Type::Varchar,
+              argument: Some(20),
+            },
+          },
+        ],
+      },
+    )
+  }
 }
 
 #[derive(Debug, Clone)]
@@ -121,3 +365,18 @@ fn token<'a>(kind: Kind) -> TokenMatch<'a> {
 
 pub type TokenStream<'a> = tokenizer::TokenStream<'a, Sql>;
 pub type ParseResult<'a, T> = combine::ParseResult<T, TokenStream<'a>>;
+
+#[cfg(test)]
+fn assert_ast<'a, T: PartialEq + std::fmt::Debug>(
+  mut parser: impl Parser<Input = TokenStream<'a>, Output = T>,
+  input: &'a str,
+  expected: T,
+) {
+  let result = parser
+    .parse_stream(&mut TokenStream::new(Sql(()), input))
+    .map_err(|err| {
+      panic!("{:#?}", err);
+    })
+    .unwrap();
+  assert_eq!(result.0, expected);
+}

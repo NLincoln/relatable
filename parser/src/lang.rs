@@ -25,15 +25,20 @@ pub enum Kind {
   Insert,
   Into,
   Value,
+  Values,
   Select,
   From,
+  As,
 
   Ident,
+  X,
+  Null,
 
   StringLiteral,
   NumericLiteral,
 
   Comma,
+  Period,
   LeftParen,
   RightParen,
   SemiColon,
@@ -43,12 +48,16 @@ impl Language for Sql {
   type Kind = Kind;
   fn keywords() -> Vec<Keyword<Kind>> {
     vec![
+      ("as", Kind::As),
+      ("null", Kind::Null),
+      ("x", Kind::X), // used to mark blob literals
       ("create", Kind::Create),
       ("table", Kind::Table),
       ("integer", Kind::Integer),
       ("varchar", Kind::Varchar),
       ("insert", Kind::Insert),
       ("into", Kind::Into),
+      ("values", Kind::Values),
       ("value", Kind::Value),
       ("select", Kind::Select),
       ("from", Kind::From),
@@ -60,6 +69,7 @@ impl Language for Sql {
   fn punctuation() -> Vec<Punctuation<Kind>> {
     vec![
       (",", Kind::Comma),
+      (".", Kind::Period),
       ("(", Kind::LeftParen),
       (")", Kind::RightParen),
       (";", Kind::SemiColon),
@@ -81,9 +91,9 @@ impl Language for Sql {
 #[cfg(test)]
 mod tests {
   use super::*;
+  use crate::tokenizer::TokenStream;
   use combine::easy::Error;
   use combine::{Positioned, StreamOnce};
-  use crate::tokenizer::TokenStream;
 
   fn tok_str(s: &str) -> Vec<&str> {
     let mut r = Vec::new();
@@ -114,6 +124,15 @@ mod tests {
     assert_eq!(tok_typ(text), types);
     assert_eq!(tok_str(text), tokens);
   }
+  #[test]
+  fn test_values() {
+    assert_tokens(
+      "VALUE VALUES",
+      &[Kind::Value, Kind::Values],
+      &["VALUE", "VALUES"],
+    );
+  }
+
   #[test]
   fn test_string_literals() {
     assert_tokens(
