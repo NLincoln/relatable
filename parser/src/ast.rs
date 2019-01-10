@@ -23,13 +23,20 @@ pub struct CreateTableStatement<'a> {
 #[derive(Debug)]
 pub struct ColumnDef<'a> {
   pub column_name: Ident<'a>,
-  pub type_name: TypeName<'a>,
+  pub type_name: TypeName,
 }
 
 #[derive(Debug)]
-pub struct TypeName<'a> {
-  pub name: &'a str,
+pub struct TypeName {
+  pub name: Type,
   pub argument: Option<i64>,
+}
+
+#[derive(Debug)]
+pub enum Type {
+  Integer,
+  Blob,
+  Str,
 }
 
 #[derive(Debug)]

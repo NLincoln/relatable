@@ -13,13 +13,14 @@ use crate::tokenizer::{Keyword, Language, Punctuation, RegexToken};
  *
  * More will be added as needed. Grammar largely comes from sqlite (see grammar.g4)
  */
-pub struct Sql(());
+pub struct Sql(pub(crate) ());
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Kind {
   Create,
   Table,
   Integer,
+
   Varchar,
   Insert,
   Into,
@@ -80,9 +81,9 @@ impl Language for Sql {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::tokenizer::TokenStream;
   use combine::easy::Error;
   use combine::{Positioned, StreamOnce};
+  use crate::tokenizer::TokenStream;
 
   fn tok_str(s: &str) -> Vec<&str> {
     let mut r = Vec::new();

@@ -8,7 +8,7 @@ use combine::{satisfy, ConsumedResult, Parser};
 use std::marker::PhantomData;
 
 pub fn parse<'a>(input: &'a str) -> ParseResult<'a, Statement<'a>> {
-  combine::parser(statement).parse
+  statement().parse_stream(&mut TokenStream::new(Sql(()), input))
 }
 
 fn statement<'a>() -> impl Parser<Input = TokenStream<'a>, Output = Statement<'a>> {
@@ -26,8 +26,65 @@ fn create_table_statement<'a>(
   })
 }
 
+fn column_def<'a>() -> impl Parser<Input = TokenStream<'a>, Output = ColumnDef<'a>> {
+  (ident(),).map(|(column_name)| ColumnDef { column_name })
+}
+
+fn type_name<'a>() -> impl Parser<Input = TokenStream<'a>, Output = TypeName> {
+  use combine::parser::choice::optional;
+
+  (
+    r#type(),
+    optional(
+      (
+        token(Kind::LeftParen),
+        token(Kind::NumericLiteral),
+        token(Kind::RightParen),
+      )
+        .map(|(_, num, _)| num),
+    )
+    .map(|(name, argument)| TypeName { name, argument }),
+  )
+}
+
+fn r#type<'a>() -> impl Parser<Input = TokenStream<'a>, Output = Type> {
+  use combine::parser::choice::choice;
+
+  choice((
+    token(Kind::Integer).map(|_| Type::Integer),
+    token(Kind::Varchar).map(|_| Type::Varchar),
+  ))
+}
+
 fn ident<'a>() -> impl Parser<Input = TokenStream<'a>, Output = Ident<'a>> {
   token(Kind::Ident).map(|val| Ident::new(val.value))
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  fn assert_ast<'a, T: PartialEq + std::fmt::Debug>(
+    mut parser: impl Parser<Input = TokenStream<'a>, Output = T>,
+    input: &'a str,
+    expected: T,
+  ) {
+    assert_eq!(
+      parser
+        .parse_stream(&mut TokenStream::new(Sql(()), input))
+        .unwrap()
+        .0,
+      expected
+    );
+  }
+
+  #[test]
+  fn test_ident() {
+    assert_ast(ident(), "abcd", Ident::new("abcd"));
+  }
+
+  #[test]
+  fn test_create_table_column_def() {}
 }
 
 #[derive(Debug, Clone)]
