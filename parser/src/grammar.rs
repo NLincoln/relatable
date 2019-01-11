@@ -7,8 +7,10 @@ use combine::stream::easy::{Error, Errors, Info};
 use combine::{satisfy, ConsumedResult, Parser};
 use std::marker::PhantomData;
 
-pub fn parse<'a>(input: &'a str) -> ParseResult<'a, Statement<'a>> {
-  statement().parse_stream(&mut TokenStream::new(Sql(()), input))
+pub fn parse<'a>(input: &'a str) -> ParseResult<'a, Vec<Statement<'a>>> {
+  use combine::parser::repeat::sep_by1;
+
+  sep_by1(statement(), token(Kind::SemiColon)).parse_stream(&mut TokenStream::new(Sql(()), input))
 }
 
 fn statement<'a>() -> impl Parser<Input = TokenStream<'a>, Output = Statement<'a>> {
