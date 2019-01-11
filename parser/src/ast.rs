@@ -5,6 +5,9 @@ impl<'a> Ident<'a> {
   pub fn new(text: &'a str) -> Self {
     Ident(text)
   }
+  pub fn text(&self) -> &'a str {
+    self.0
+  }
 }
 
 #[derive(Debug, Clone, PartialEq)]

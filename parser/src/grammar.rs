@@ -2,24 +2,33 @@ use crate::ast::*;
 use crate::tokenizer::{self, Pos, Token};
 use crate::{Kind, Sql};
 
-use combine::error::Tracked;
 use combine::stream::easy::{Error, Errors, Info};
+use combine::StreamOnce;
 use combine::{satisfy, ConsumedResult, Parser};
 use std::marker::PhantomData;
 
-pub fn parse<'a>(input: &'a str) -> ParseResult<'a, Vec<Statement<'a>>> {
-  use combine::parser::repeat::sep_by1;
+use combine::error::{Consumed, Tracked};
 
-  sep_by1(statement(), token(Kind::SemiColon)).parse_stream(&mut TokenStream::new(Sql(()), input))
+pub type ParseError<'a> = Consumed<Tracked<<TokenStream<'a> as StreamOnce>::Error>>;
+
+pub fn parse<'a>(input: &'a str) -> Result<Vec<Statement<'a>>, ParseError<'a>> {
+  use combine::parser::repeat::many1;
+  many1(statement())
+    .parse_stream(&mut TokenStream::new(Sql(()), input))
+    .map(|result| result.0)
 }
 
 fn statement<'a>() -> impl Parser<Input = TokenStream<'a>, Output = Statement<'a>> {
   use combine::parser::choice::choice;
-  choice((
-    create_table_statement().map(Statement::CreateTable),
-    select_statement().map(Statement::Select),
-    insert_statement().map(Statement::Insert),
-  ))
+  (
+    choice((
+      create_table_statement().map(Statement::CreateTable),
+      select_statement().map(Statement::Select),
+      insert_statement().map(Statement::Insert),
+    )),
+    token(Kind::SemiColon),
+  )
+    .map(|(statement, _)| statement)
 }
 
 fn create_table_statement<'a>(
