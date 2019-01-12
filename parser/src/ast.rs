@@ -1,3 +1,5 @@
+use std::fmt;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Ident<'a>(&'a str);
 
@@ -7,6 +9,12 @@ impl<'a> Ident<'a> {
   }
   pub fn text(&self) -> &'a str {
     self.0
+  }
+}
+
+impl<'a> fmt::Display for Ident<'a> {
+  fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    write!(f, "\"{}\"", self.text())
   }
 }
 
@@ -68,6 +76,15 @@ pub enum ResultColumn<'a> {
 pub struct ColumnIdent<'a> {
   pub column: Ident<'a>,
   pub table: Option<Ident<'a>>,
+}
+
+impl<'a> ToString for ColumnIdent<'a> {
+  fn to_string(&self) -> String {
+    match self.table {
+      None => format!("{}", self.column),
+      Some(ref table) => format!("{}.{}", table, self.column),
+    }
+  }
 }
 
 #[derive(Debug, Clone, PartialEq)]
