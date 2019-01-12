@@ -22,6 +22,8 @@ pub enum SchemaError {
   Utf8Error(std::string::FromUtf8Error),
   /// A column was created that had an invalid data type
   FieldError(FieldError),
+  /// Table could not be found
+  TableNotFound
 }
 
 impl From<io::Error> for SchemaError {

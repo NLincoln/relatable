@@ -1,6 +1,9 @@
 use db::Database;
 use schema::{Field, FieldKind, Schema};
-use std::{env, fs};
+use std::{
+  env, fs,
+  io::{self, Write},
+};
 
 fn main() -> Result<(), schema::SchemaError> {
   env_logger::init();
@@ -10,8 +13,49 @@ fn main() -> Result<(), schema::SchemaError> {
   }
   let op = &args[1];
   let filename = &args[2];
+  if op == "run-file" {
+    if args.len() < 4 {
+      panic!("Need the name of the sql file to read as the last arg");
+    }
+    let mut file = fs::OpenOptions::new()
+      .read(true)
+      .write(true)
+      .truncate(false)
+      .open(filename)?;
 
-  if op == "read" {
+    let mut database = Database::from_disk(&mut file)?;
+
+    let query = fs::read_to_string(&args[3])?;
+    let results = database.execute_query(&query).unwrap();
+    for result in results {
+      println!("{:?}", result);
+    }
+  } else if op == "repl" {
+    let mut file = fs::OpenOptions::new()
+      .read(true)
+      .write(true)
+      .truncate(false)
+      .open(filename)?;
+
+    let mut database = Database::from_disk(&mut file)?;
+
+    loop {
+      print!("> ");
+      io::stdout().flush()?;
+      let query = {
+        let mut buf = String::new();
+        io::stdin().read_line(&mut buf)?;
+        buf
+      };
+      if query == "exit" {
+        break;
+      }
+      match database.execute_query(&query) {
+        Ok(result) => println!("{:?}", result),
+        Err(err) => println!("{:?}", err),
+      };
+    }
+  } else if op == "read" {
     let mut file = fs::OpenOptions::new().read(true).open(filename)?;
     let mut database = Database::from_disk(&mut file)?;
     let schema = database.schema().unwrap();

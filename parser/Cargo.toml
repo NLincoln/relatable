@@ -1,12 +1,9 @@
 [package]
-name = "schema"
+name = "parser"
 version = "0.1.0"
 authors = ["Nathan <nlincoln@intellifarms.com>"]
 edition = "2018"
 
 [dependencies]
-byteorder = "1.2"
-env_logger = "0.6"
-log = "0.4"
-parser = { path = "../parser" }
-hex = "0.3"
+combine = "3.6"
+regex = "1.1"

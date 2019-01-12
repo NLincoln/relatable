@@ -1,5 +1,5 @@
-use crate::SchemaError;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+use crate::SchemaError;
 use std::io::{Read, Write};
 
 /// A Field represents a column in the database
@@ -49,6 +49,31 @@ impl Field {
 
   pub fn kind(&self) -> &FieldKind {
     &self.kind
+  }
+  pub fn name(&self) -> &str {
+    &self.name
+  }
+
+  pub fn from_column_def<'a, 'b>(
+    column_def: &'b parser::ColumnDef<'a>,
+  ) -> Result<Self, FieldError> {
+    use parser::Type;
+    let name = column_def.column_name.text().to_string();
+    let type_name = &column_def.type_name;
+    match type_name.name {
+      Type::Integer => {
+        let size = type_name.argument.unwrap_or(8);
+        Ok(Field::new(FieldKind::Number(size as u8), name)?)
+      }
+      Type::Blob => {
+        let size = type_name.argument.unwrap_or(100);
+        Ok(Field::new(FieldKind::Blob(size as u64), name)?)
+      }
+      Type::Varchar => {
+        let size = type_name.argument.unwrap_or(128);
+        Ok(Field::new(FieldKind::Str(size as u64), name)?)
+      }
+    }
   }
 }
 
