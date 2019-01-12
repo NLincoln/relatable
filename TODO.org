@@ -1,9 +1,10 @@
 * [1/2] Query Parsing
 - [X] Create a basic parser for SQL queries
 - [ ] Typecheck that sql
+  - [ ] Handle cases like insert (id, id) value (1, 1), which will cause corruption
 
 * RowData
-- [ ] Verify that the type of the RowCell we insert matches the schema (otherwise Bad Things will happen)
+- [X] Verify that the type of the RowCell we insert matches the schema (otherwise Bad Things will happen)
 - [ ] Default column values
 - [ ] Auto increment
 - [ ] Updating rows
