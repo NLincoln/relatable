@@ -9,7 +9,7 @@ pub struct RowIterator<D: Read> {
   schema: Schema,
 }
 
-impl<'a, 'b, D: Read> Iterator for RowIterator<D> {
+impl<D: Read> Iterator for RowIterator<D> {
   type Item = Result<Row, RowCellError>;
   fn next(&mut self) -> Option<Self::Item> {
     /*
@@ -40,7 +40,7 @@ impl<'a, 'b, D: Read> Iterator for RowIterator<D> {
   }
 }
 
-impl<'a, 'b, D: Read> Table for RowIterator<D> {
+impl<D: Read> Table for RowIterator<D> {
   fn schema(&self) -> &[Field] {
     self.schema.fields()
   }

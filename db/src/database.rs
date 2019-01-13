@@ -1,9 +1,8 @@
+use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use crate::{Block, BlockDisk};
 use log::debug;
-use schema::{OnDiskSchema, RowIterator, Schema, Table};
+use schema::{OnDiskSchema, Schema};
 use std::collections::BTreeMap;
-
-use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use std::io::{self, Read, Seek, Write};
 
 /// Convenience trait for read + write + seek
@@ -133,7 +132,7 @@ impl<T: Disk> Database<T> {
     &'disk mut self,
     query: &'a str,
   ) -> Result<
-    Vec<Result<Option<RowIterator<BlockDisk<'disk, impl BlockAllocator>>>, DatabaseError>>,
+    Vec<Result<Option<Vec<Result<schema::Row, schema::RowCellError>>>, DatabaseError>>,
     parser::AstError<'a>,
   > {
     let ast = parser::process_query(query)?;
@@ -148,7 +147,7 @@ impl<T: Disk> Database<T> {
   fn process_statement<'a, 'disk>(
     &'disk mut self,
     ast: parser::Statement<'a>,
-  ) -> Result<Option<RowIterator<BlockDisk<'disk, impl BlockAllocator>>>, DatabaseError> {
+  ) -> Result<Option<Vec<Result<schema::Row, schema::RowCellError>>>, DatabaseError> {
     use parser::Statement;
     match ast {
       Statement::CreateTable(create_table_statement) => {
@@ -286,13 +285,10 @@ impl<T: Disk> Database<T> {
   fn read_table<'a>(
     &'a mut self,
     table_name: &str,
-  ) -> Result<RowIterator<BlockDisk<'a, impl BlockAllocator>>, DatabaseError> {
+  ) -> Result<Vec<Result<schema::Row, schema::RowCellError>>, DatabaseError> {
     let table = self.get_table(table_name)?;
     let blockdisk = BlockDisk::new(self, table.data_block_offset())?;
-    Ok(schema::Row::row_iterator(
-      blockdisk,
-      table.schema().clone(),
-    )?)
+    Ok(schema::Row::row_iterator(blockdisk, table.schema().clone())?.collect::<Vec<_>>())
   }
 
   fn create_table(&mut self, schema: Schema) -> Result<(), DatabaseError> {
@@ -414,9 +410,8 @@ mod tests {
 
       let all_rows = database
         .read_table("users")?
-        .clone()
         .into_iter()
-        .map(|row| row.into_cells(&schema).unwrap())
+        .map(|row| row.unwrap().into_cells(&schema).unwrap())
         .collect::<Vec<_>>();
 
       assert_eq!(all_rows, expected_rows);
