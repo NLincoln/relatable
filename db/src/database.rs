@@ -1,6 +1,6 @@
 use crate::{Block, BlockDisk};
 use log::debug;
-use schema::{OnDiskSchema, Schema};
+use schema::{OnDiskSchema, RowIterator, Schema, Table};
 use std::collections::BTreeMap;
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
@@ -129,21 +129,26 @@ impl<'a> From<parser::AstError<'a>> for DatabaseQueryError<'a> {
 }
 
 impl<T: Disk> Database<T> {
-  pub fn execute_query<'a>(
-    &mut self,
+  pub fn execute_query<'a, 'disk>(
+    &'disk mut self,
     query: &'a str,
-  ) -> Result<Vec<Vec<schema::Row>>, DatabaseQueryError<'a>> {
+  ) -> Result<
+    Vec<Result<Option<RowIterator<BlockDisk<'disk, impl BlockAllocator>>>, DatabaseError>>,
+    parser::AstError<'a>,
+  > {
     let ast = parser::process_query(query)?;
-    let mut result = Vec::with_capacity(ast.len());
-    for statement in ast.iter() {
-      result.push(self.process_statement(statement)?);
-    }
-    Ok(result)
+    Ok(
+      ast
+        .into_iter()
+        .map(|statement| self.process_statement(statement))
+        .collect::<Vec<_>>(),
+    )
   }
-  fn process_statement<'a>(
-    &mut self,
-    ast: &parser::Statement<'a>,
-  ) -> Result<Vec<schema::Row>, DatabaseError> {
+
+  fn process_statement<'a, 'disk>(
+    &'disk mut self,
+    ast: parser::Statement<'a>,
+  ) -> Result<Option<RowIterator<BlockDisk<'disk, impl BlockAllocator>>>, DatabaseError> {
     use parser::Statement;
     match ast {
       Statement::CreateTable(create_table_statement) => {
@@ -165,7 +170,7 @@ impl<T: Disk> Database<T> {
           schema_fields,
         );
         self.create_table(schema)?;
-        return Ok(vec![]);
+        return Ok(None);
       }
       Statement::Insert(insert_statement) => {
         use parser::InsertStatementValues as Values;
@@ -193,13 +198,13 @@ impl<T: Disk> Database<T> {
         match &insert_statement.values {
           Values::SingleRow(row) => {
             self.insert_ast_row(schema, &row, &mapping)?;
-            Ok(vec![])
+            Ok(None)
           }
           Values::MultipleRows(rows) => {
             for row in rows.iter() {
               self.insert_ast_row(schema, &row, &mapping)?;
             }
-            Ok(vec![])
+            Ok(None)
           }
         }
       }
@@ -208,8 +213,8 @@ impl<T: Disk> Database<T> {
         // select * from table queries are allowed. Too much complexity for right here.
         // I think next I'll work on a Table abstraction
         match &select_statement.table {
-          Some(table) => self.read_table(table.text()),
-          None => Ok(vec![]),
+          Some(table) => Ok(Some(self.read_table(table.text())?)),
+          None => Ok(None),
         }
       }
     }
@@ -250,11 +255,7 @@ impl<T: Disk> Database<T> {
         table_name: table_name.to_string(),
       })
   }
-  pub fn add_row(
-    &mut self,
-    table: &str,
-    row: Vec<schema::OwnedRowCell>,
-  ) -> Result<(), DatabaseError> {
+  fn add_row(&mut self, table: &str, row: Vec<schema::OwnedRowCell>) -> Result<(), DatabaseError> {
     debug!("Adding row to table");
     let schema = self.get_table(table)?;
     // elements in the row must be coercible to the tables schema
@@ -282,19 +283,19 @@ impl<T: Disk> Database<T> {
     Ok(())
   }
 
-  pub fn read_table(&mut self, table_name: &str) -> Result<Vec<schema::Row>, DatabaseError> {
+  fn read_table<'a>(
+    &'a mut self,
+    table_name: &str,
+  ) -> Result<RowIterator<BlockDisk<'a, impl BlockAllocator>>, DatabaseError> {
     let table = self.get_table(table_name)?;
-    let mut blockdisk = BlockDisk::new(self, table.data_block_offset())?;
-    let mut rows = vec![];
-    for row in schema::Row::row_iterator(&mut blockdisk, table.schema())? {
-      log::debug!("Row was read");
-      let row = row?;
-      rows.push(row);
-    }
-    Ok(rows)
+    let blockdisk = BlockDisk::new(self, table.data_block_offset())?;
+    Ok(schema::Row::row_iterator(
+      blockdisk,
+      table.schema().clone(),
+    )?)
   }
 
-  pub fn create_table(&mut self, schema: Schema) -> Result<(), DatabaseError> {
+  fn create_table(&mut self, schema: Schema) -> Result<(), DatabaseError> {
     // Alright so the first thing we need to do is go find the
     // schema table and add this entry to it.
     debug!("Creating Table");

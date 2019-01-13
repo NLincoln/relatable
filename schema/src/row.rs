@@ -1,13 +1,15 @@
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+use crate::table::Table;
 use crate::{Field, FieldKind, Schema};
 use std::io::{self, Read, Seek, Write};
 use std::str::Utf8Error;
-pub struct RowIterator<'a, 'b, D: Read> {
-  disk: &'a mut D,
-  schema: &'b Schema,
+
+pub struct RowIterator<D: Read> {
+  disk: D,
+  schema: Schema,
 }
 
-impl<'a, 'b, D: Read> Iterator for RowIterator<'a, 'b, D> {
+impl<'a, 'b, D: Read> Iterator for RowIterator<D> {
   type Item = Result<Row, RowCellError>;
   fn next(&mut self) -> Option<Self::Item> {
     /*
@@ -24,7 +26,7 @@ impl<'a, 'b, D: Read> Iterator for RowIterator<'a, 'b, D> {
      * This is ugly but it's more of a hack until I can get btree tables working.
      * The hacks are also contained to this file (including stuff like RowMeta)
      */
-    let row = match Row::from_schema(self.disk, self.schema) {
+    let row = match Row::from_schema(&mut self.disk, &self.schema) {
       Ok(row) => row,
       err @ Err(_) => return Some(err),
     };
@@ -35,6 +37,12 @@ impl<'a, 'b, D: Read> Iterator for RowIterator<'a, 'b, D> {
       log::debug!("Encountered existing row");
       Some(Ok(row))
     }
+  }
+}
+
+impl<'a, 'b, D: Read> Table for RowIterator<D> {
+  fn schema(&self) -> &[Field] {
+    self.schema.fields()
   }
 }
 
@@ -70,10 +78,10 @@ pub struct Row {
 }
 
 impl Row {
-  pub fn row_iterator<'a, 'b, D: Read + Seek>(
-    disk: &'a mut D,
-    schema: &'b Schema,
-  ) -> io::Result<RowIterator<'a, 'b, D>> {
+  pub fn row_iterator<'a, D: Read + Seek>(
+    mut disk: D,
+    schema: Schema,
+  ) -> io::Result<RowIterator<D>> {
     disk.seek(io::SeekFrom::Start(0))?;
     Ok(RowIterator { disk, schema })
   }
@@ -87,11 +95,11 @@ impl Row {
     Ok(Self { data, meta })
   }
 
-  fn from_cells(schema: &Schema, cells: Vec<OwnedRowCell>, meta: RowMeta) -> io::Result<Row> {
+  fn from_cells(cells: Vec<OwnedRowCell>, meta: RowMeta) -> io::Result<Row> {
     let mut data = io::Cursor::new(vec![]);
 
-    for (i, cell) in cells.iter().enumerate() {
-      cell.persist(schema, i, &mut data)?;
+    for cell in cells.iter() {
+      cell.persist(&mut data)?;
     }
 
     let data = data.into_inner();
@@ -158,7 +166,7 @@ impl Row {
 
     disk.seek(io::SeekFrom::End(-(size_of_row as i64)))?;
     {
-      let row = Row::from_cells(schema, row, RowMeta { is_last_row: false })?;
+      let row = Row::from_cells(row, RowMeta { is_last_row: false })?;
       log::debug!("-> Writing new row over the old sentinal");
       row.persist(disk)?;
     }
@@ -275,12 +283,7 @@ impl OwnedRowCell {
       OwnedRowCell::Blob(data) => RowCell::Blob(data.as_ref()),
     }
   }
-  pub fn persist(
-    &self,
-    schema: &Schema,
-    field_index: usize,
-    disk: &mut impl Write,
-  ) -> io::Result<()> {
+  pub fn persist(&self, disk: &mut impl Write) -> io::Result<()> {
     match self {
       OwnedRowCell::Number { value, size } => {
         disk.write_int::<BigEndian>(*value, *size as usize)?
