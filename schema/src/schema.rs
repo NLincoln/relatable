@@ -1,11 +1,11 @@
-use crate::{Field, FieldError};
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+use crate::{FieldError, SchemaField};
 use std::io::{self, Read, Write};
 
 /// The schema for a given table.
 #[derive(Debug, PartialEq, Clone)]
 pub struct Schema {
-  fields: Vec<Field>,
+  fields: Vec<SchemaField>,
   name: String,
 }
 
@@ -23,7 +23,7 @@ pub enum SchemaError {
   /// A column was created that had an invalid data type
   FieldError(FieldError),
   /// Table could not be found
-  TableNotFound
+  TableNotFound,
 }
 
 impl From<io::Error> for SchemaError {
@@ -46,7 +46,7 @@ impl From<FieldError> for SchemaError {
 
 impl Schema {
   /// Creates a new schema from a set of fields
-  pub fn from_fields(name: String, fields: Vec<Field>) -> Self {
+  pub fn from_fields(name: String, fields: Vec<SchemaField>) -> Self {
     Self { fields, name }
   }
 
@@ -55,22 +55,13 @@ impl Schema {
   }
 
   /// Gets the fields of this schema
-  pub fn fields(&self) -> &[Field] {
+  pub fn fields(&self) -> &[SchemaField] {
     &self.fields
   }
   pub fn sizeof_row(&self) -> usize {
     let mut offset = 0;
     for field in &self.fields {
       offset += field.kind().size()
-    }
-    offset
-  }
-
-  pub(crate) fn offset_of(&self, field_index: usize) -> usize {
-    let mut offset = 0;
-    for i in 0..field_index {
-      let field = &self.fields[i];
-      offset += field.kind().size();
     }
     offset
   }
@@ -143,7 +134,7 @@ impl OnDiskSchema {
     let num_fields = disk.read_u16::<BigEndian>()?;
 
     for _ in 0..num_fields {
-      let field = Field::from_persisted(disk)?;
+      let field = SchemaField::from_persisted(disk)?;
       fields.push(field);
     }
     let schema = Schema { fields, name };
@@ -193,9 +184,9 @@ mod tests {
 
   #[test]
   fn number_type_constraints() {
-    let field = Field::new(FieldKind::Number(7), "id".into()).unwrap_err();
+    let field = SchemaField::new(FieldKind::Number(7), "id".into()).unwrap_err();
     assert_eq!(field, FieldError::InvalidNumberType(7));
-    let field = Field::new(FieldKind::Number(16), "id".into()).unwrap_err();
+    let field = SchemaField::new(FieldKind::Number(16), "id".into()).unwrap_err();
     assert_eq!(field, FieldError::InvalidNumberType(16));
   }
 
@@ -205,11 +196,11 @@ mod tests {
       schema: Schema {
         name: "foo".into(),
         fields: vec![
-          Field::new(FieldKind::Number(8), "id".into()).unwrap(),
-          Field::new(FieldKind::Number(8), "id2".into()).unwrap(),
-          Field::new(FieldKind::Number(8), "id3".into()).unwrap(),
-          Field::new(FieldKind::Number(8), "id4".into()).unwrap(),
-          Field::new(FieldKind::Number(8), "id5".into()).unwrap(),
+          SchemaField::new(FieldKind::Number(8), "id".into()).unwrap(),
+          SchemaField::new(FieldKind::Number(8), "id2".into()).unwrap(),
+          SchemaField::new(FieldKind::Number(8), "id3".into()).unwrap(),
+          SchemaField::new(FieldKind::Number(8), "id4".into()).unwrap(),
+          SchemaField::new(FieldKind::Number(8), "id5".into()).unwrap(),
         ],
       },
       data_block_offset: 128,

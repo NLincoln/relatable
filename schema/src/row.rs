@@ -1,6 +1,7 @@
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+use crate::field::Field;
 use crate::table::Table;
-use crate::{Field, FieldKind, Schema};
+use crate::{FieldKind, Schema};
 use std::io::{self, Read, Seek, Write};
 use std::str::Utf8Error;
 
@@ -41,8 +42,8 @@ impl<D: Read> Iterator for RowIterator<D> {
 }
 
 impl<D: Read> Table for RowIterator<D> {
-  fn schema(&self) -> &[Field] {
-    self.schema.fields()
+  fn schema(&self) -> Vec<crate::TableField> {
+    self.schema.fields().iter().map(Into::into).collect()
   }
 }
 
@@ -95,7 +96,11 @@ impl Row {
     Ok(Self { data, meta })
   }
 
-  fn from_cells(cells: Vec<OwnedRowCell>, meta: RowMeta) -> io::Result<Row> {
+  pub fn from_cells(cells: Vec<OwnedRowCell>) -> io::Result<Row> {
+    Row::from_cells_impl(cells, RowMeta { is_last_row: false })
+  }
+
+  fn from_cells_impl(cells: Vec<OwnedRowCell>, meta: RowMeta) -> io::Result<Row> {
     let mut data = io::Cursor::new(vec![]);
 
     for cell in cells.iter() {
@@ -113,21 +118,21 @@ impl Row {
     Ok(())
   }
 
-  pub fn as_cells<'a>(&'a self, schema: &Schema) -> Result<Vec<RowCell<'a>>, RowCellError> {
-    let mut buf = Vec::with_capacity(schema.fields().len());
-    for field_index in 0..schema.fields().len() {
-      buf.push(RowCell::new(&self.data, schema, field_index)?);
+  pub fn as_cells<'a>(&'a self, fields: &[impl Field]) -> Result<Vec<RowCell<'a>>, RowCellError> {
+    let mut buf = Vec::with_capacity(fields.len());
+    let mut offset = 0;
+    for field in fields.iter() {
+      buf.push(RowCell::new(&self.data, field, offset)?);
+      offset += field.kind().size();
     }
     Ok(buf)
   }
-  pub fn into_cells(self, schema: &Schema) -> Result<Vec<OwnedRowCell>, RowCellError> {
-    let mut buf = Vec::with_capacity(schema.fields().len());
-    for field_index in 0..schema.fields().len() {
-      buf.push(OwnedRowCell::from(RowCell::new(
-        &self.data,
-        schema,
-        field_index,
-      )?))
+  pub fn into_cells(self, fields: &[impl Field]) -> Result<Vec<OwnedRowCell>, RowCellError> {
+    let mut buf = Vec::with_capacity(fields.len());
+    let mut offset = 0;
+    for field in fields.iter() {
+      buf.push(OwnedRowCell::from(RowCell::new(&self.data, field, offset)?));
+      offset += field.kind().size();
     }
     Ok(buf)
   }
@@ -166,7 +171,7 @@ impl Row {
 
     disk.seek(io::SeekFrom::End(-(size_of_row as i64)))?;
     {
-      let row = Row::from_cells(row, RowMeta { is_last_row: false })?;
+      let row = Row::from_cells_impl(row, RowMeta { is_last_row: false })?;
       log::debug!("-> Writing new row over the old sentinal");
       row.persist(disk)?;
     }
@@ -221,10 +226,9 @@ impl OwnedRowCell {
         Ok(buf) => Some(OwnedRowCell::Blob(buf)),
         Err(_) => None,
       },
-      LiteralValue::Null => None,
     }
   }
-  pub fn coerce_to(mut self, field: &Field) -> Option<OwnedRowCell> {
+  pub fn coerce_to(mut self, field: &impl Field) -> Option<OwnedRowCell> {
     use std::cmp::{Ord, Ordering};
     match &mut self {
       OwnedRowCell::Blob(data) => {
@@ -333,12 +337,10 @@ impl From<io::Error> for RowCellError {
 }
 
 impl<'a> RowCell<'a> {
-  pub fn new(data: &'a [u8], schema: &Schema, field_index: usize) -> Result<Self, RowCellError> {
+  pub fn new(data: &'a [u8], field: &impl Field, offset: usize) -> Result<Self, RowCellError> {
     use byteorder::{BigEndian, ReadBytesExt};
 
-    let offset = schema.offset_of(field_index);
     let slice = &data[offset..];
-    let field = &schema.fields()[field_index];
     match field.kind() {
       FieldKind::Number(n) => {
         let n = *n;

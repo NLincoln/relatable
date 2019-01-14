@@ -164,13 +164,11 @@ fn literal_value<'a>() -> impl Parser<Input = TokenStream<'a>, Output = LiteralV
     numeric_literal().map(LiteralValue::NumericLiteral),
     string_literal().map(LiteralValue::StringLiteral),
     blob_literal().map(LiteralValue::BlobLiteral),
-    token(Kind::Null).map(|_| LiteralValue::Null),
   ))
 }
 
 #[test]
 fn test_literal_value() {
-  assert_ast(literal_value(), "null", LiteralValue::Null);
   assert_ast(literal_value(), "123", LiteralValue::NumericLiteral(123));
 }
 

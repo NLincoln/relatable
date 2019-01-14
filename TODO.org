@@ -8,6 +8,7 @@
 - [ ] Default column values
 - [ ] Auto increment
 - [ ] Updating rows
+- [ ] Null
 
 * Disk Format
 - [ ] Switch to a b-tree based disk format

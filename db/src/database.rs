@@ -131,10 +131,7 @@ impl<T: Disk> Database<T> {
   pub fn execute_query<'a, 'disk>(
     &'disk mut self,
     query: &'a str,
-  ) -> Result<
-    Vec<Result<Option<Vec<Result<schema::Row, schema::RowCellError>>>, DatabaseError>>,
-    parser::AstError<'a>,
-  > {
+  ) -> Result<Vec<Result<Option<Vec<schema::Row>>, DatabaseError>>, parser::AstError<'a>> {
     let ast = parser::process_query(query)?;
     Ok(
       ast
@@ -147,7 +144,7 @@ impl<T: Disk> Database<T> {
   fn process_statement<'a, 'disk>(
     &'disk mut self,
     ast: parser::Statement<'a>,
-  ) -> Result<Option<Vec<Result<schema::Row, schema::RowCellError>>>, DatabaseError> {
+  ) -> Result<Option<Vec<schema::Row>>, DatabaseError> {
     use parser::Statement;
     match ast {
       Statement::CreateTable(create_table_statement) => {
@@ -159,10 +156,11 @@ impl<T: Disk> Database<T> {
           )));
         }
 
-        let mut schema_fields = vec![];
-        for column_def in create_table_statement.column_defs.iter() {
-          schema_fields.push(schema::Field::from_column_def(column_def)?);
-        }
+        let schema_fields = create_table_statement
+          .column_defs
+          .iter()
+          .map(schema::SchemaField::from_column_def)
+          .collect::<Result<Vec<_>, schema::FieldError>>()?;
 
         let schema = schema::Schema::from_fields(
           create_table_statement.table_name.text().to_string(),
@@ -211,8 +209,16 @@ impl<T: Disk> Database<T> {
         // I'm just going to go ahead and say that nothing except the barest
         // select * from table queries are allowed. Too much complexity for right here.
         // I think next I'll work on a Table abstraction
+
         match &select_statement.table {
-          Some(table) => Ok(Some(self.read_table(table.text())?)),
+          Some(table) => {
+            let table = self.get_table(table.text())?;
+            let blockdisk = BlockDisk::new(self, table.data_block_offset())?;
+            let iter = schema::Row::row_iterator(blockdisk, table.schema().clone())?;
+
+            let iter = iter.collect::<Result<Vec<_>, schema::RowCellError>>()?;
+            Ok(Some(iter))
+          }
           None => Ok(None),
         }
       }
@@ -381,15 +387,17 @@ mod tests {
 
   #[test]
   fn test_adding_rows() -> Result<(), DatabaseError> {
-    use schema::{Field, FieldKind};
+    use schema::{FieldKind, SchemaField};
 
     // Disk should have two blocks: one for the dbmeta and an empty schema block
     let mut database = Database::new(io::Cursor::new(vec![]))?;
     let schema = Schema::from_fields(
       "users".into(),
       vec![
-        Field::new(FieldKind::Number(8), "id".into()).map_err(|err| SchemaError::from(err))?,
-        Field::new(FieldKind::Str(20), "username".into()).map_err(|err| SchemaError::from(err))?,
+        SchemaField::new(FieldKind::Number(8), "id".into())
+          .map_err(|err| SchemaError::from(err))?,
+        SchemaField::new(FieldKind::Str(20), "username".into())
+          .map_err(|err| SchemaError::from(err))?,
       ],
     );
     use schema::OwnedRowCell;
@@ -411,7 +419,7 @@ mod tests {
       let all_rows = database
         .read_table("users")?
         .into_iter()
-        .map(|row| row.unwrap().into_cells(&schema).unwrap())
+        .map(|row| row.unwrap().into_cells(schema.fields()).unwrap())
         .collect::<Vec<_>>();
 
       assert_eq!(all_rows, expected_rows);
@@ -421,16 +429,16 @@ mod tests {
   }
   #[test]
   fn test_adding_a_bunch_of_tables() -> Result<(), DatabaseError> {
-    use schema::{Field, FieldKind};
+    use schema::{FieldKind, SchemaField};
     let mut database = Database::new(io::Cursor::new(vec![]))?;
     let schema = Schema::from_fields(
       "the_name".into(),
       vec![
-        Field::new(FieldKind::Blob(10), "id".into())?,
-        Field::new(FieldKind::Blob(10), "id2".into())?,
-        Field::new(FieldKind::Blob(10), "id3".into())?,
-        Field::new(FieldKind::Blob(10), "id4".into())?,
-        Field::new(FieldKind::Blob(10), "id5".into())?,
+        SchemaField::new(FieldKind::Blob(10), "id".into())?,
+        SchemaField::new(FieldKind::Blob(10), "id2".into())?,
+        SchemaField::new(FieldKind::Blob(10), "id3".into())?,
+        SchemaField::new(FieldKind::Blob(10), "id4".into())?,
+        SchemaField::new(FieldKind::Blob(10), "id5".into())?,
       ],
     );
     let mut expected_tables = vec![];

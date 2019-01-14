@@ -12,17 +12,30 @@ fn main() -> Result<(), schema::SchemaError> {
   }
   let op = &args[1];
   let filename = &args[2];
+
+  if op == "create" || op == "init" {
+    let mut file = fs::OpenOptions::new()
+      .read(true)
+      .write(true)
+      .truncate(true)
+      .create_new(true)
+      .open(filename)?;
+    let database = Database::new(&mut file)?;
+    println!("Successfully created database");
+    println!("{:?}", database);
+    return Ok(());
+  }
+  let mut file = fs::OpenOptions::new()
+    .read(true)
+    .write(true)
+    .truncate(false)
+    .open(filename)?;
+  let mut database = Database::from_disk(&mut file)?;
+
   if op == "run-file" {
     if args.len() < 4 {
       panic!("Need the name of the sql file to read as the last arg");
     }
-    let mut file = fs::OpenOptions::new()
-      .read(true)
-      .write(true)
-      .truncate(false)
-      .open(filename)?;
-
-    let mut database = Database::from_disk(&mut file)?;
 
     let query = fs::read_to_string(&args[3])?;
     let results = database.execute_query(&query).unwrap();
@@ -30,14 +43,6 @@ fn main() -> Result<(), schema::SchemaError> {
       println!("{:?}", result);
     }
   } else if op == "repl" {
-    let mut file = fs::OpenOptions::new()
-      .read(true)
-      .write(true)
-      .truncate(false)
-      .open(filename)?;
-
-    let mut database = Database::from_disk(&mut file)?;
-
     loop {
       print!("> ");
       io::stdout().flush()?;
@@ -55,25 +60,11 @@ fn main() -> Result<(), schema::SchemaError> {
       };
     }
   } else if op == "schema" {
-    let mut file = fs::OpenOptions::new().read(true).open(filename)?;
-    let mut database = Database::from_disk(&mut file)?;
     let schema = database.schema().unwrap();
     println!("Current Schema");
 
     println!("{:?}", schema);
-  } else if op == "create" || op == "init" {
-    let mut file = fs::OpenOptions::new()
-      .read(true)
-      .write(true)
-      .truncate(true)
-      .create_new(true)
-      .open(filename)?;
-    let database = Database::new(&mut file)?;
-    println!("Successfully created database");
-    println!("{:?}", database);
   } else if op == "dbmeta" {
-    let mut file = fs::OpenOptions::new().read(true).open(filename)?;
-    let database = Database::from_disk(&mut file)?;
     println!("{:?}", database);
   }
 
