@@ -14,23 +14,23 @@ fn main() -> Result<(), schema::SchemaError> {
   let filename = &args[2];
 
   if op == "create" || op == "init" {
-    let mut file = fs::OpenOptions::new()
+    let file = fs::OpenOptions::new()
       .read(true)
       .write(true)
       .truncate(true)
       .create_new(true)
       .open(filename)?;
-    let database = Database::new(&mut file)?;
+    let database = Database::new(file)?;
     println!("Successfully created database");
     println!("{:?}", database);
     return Ok(());
   }
-  let mut file = fs::OpenOptions::new()
+  let file = fs::OpenOptions::new()
     .read(true)
     .write(true)
     .truncate(false)
     .open(filename)?;
-  let mut database = Database::from_disk(&mut file)?;
+  let mut database = Database::from_disk(file)?;
 
   if op == "run-file" {
     if args.len() < 4 {

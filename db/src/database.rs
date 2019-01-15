@@ -1,5 +1,5 @@
-use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use crate::{Block, BlockDisk};
+use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use log::debug;
 use schema::{OnDiskSchema, Schema};
 use std::collections::BTreeMap;
@@ -80,6 +80,7 @@ pub enum DatabaseError {
   Schema(schema::SchemaError),
   Io(io::Error),
   FieldError(schema::FieldError),
+  TableError(schema::TableError),
   // basically a catch all because I'm lazy
   // todo -> make proper enumeriations for all
   // these cases
@@ -107,6 +108,12 @@ impl From<schema::RowCellError> for DatabaseError {
 impl From<schema::FieldError> for DatabaseError {
   fn from(err: schema::FieldError) -> Self {
     DatabaseError::FieldError(err)
+  }
+}
+
+impl From<schema::TableError> for DatabaseError {
+  fn from(err: schema::TableError) -> Self {
+    DatabaseError::TableError(err)
   }
 }
 
@@ -216,7 +223,7 @@ impl<T: Disk> Database<T> {
             let blockdisk = BlockDisk::new(self, table.data_block_offset())?;
             let iter = schema::Row::row_iterator(blockdisk, table.schema().clone())?;
 
-            let iter = iter.collect::<Result<Vec<_>, schema::RowCellError>>()?;
+            let iter = iter.collect::<Result<Vec<_>, schema::TableError>>()?;
             Ok(Some(iter))
           }
           None => Ok(None),
@@ -286,15 +293,6 @@ impl<T: Disk> Database<T> {
     unsafe { schema::Row::insert_row(valid_row, &mut data_blockdisk, schema.schema())? };
 
     Ok(())
-  }
-
-  fn read_table<'a>(
-    &'a mut self,
-    table_name: &str,
-  ) -> Result<Vec<Result<schema::Row, schema::RowCellError>>, DatabaseError> {
-    let table = self.get_table(table_name)?;
-    let blockdisk = BlockDisk::new(self, table.data_block_offset())?;
-    Ok(schema::Row::row_iterator(blockdisk, table.schema().clone())?.collect::<Vec<_>>())
   }
 
   fn create_table(&mut self, schema: Schema) -> Result<(), DatabaseError> {

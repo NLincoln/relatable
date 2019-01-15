@@ -1,7 +1,7 @@
-use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use crate::field::Field;
 use crate::table::Table;
 use crate::{FieldKind, Schema};
+use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use std::io::{self, Read, Seek, Write};
 use std::str::Utf8Error;
 
@@ -11,7 +11,7 @@ pub struct RowIterator<D: Read> {
 }
 
 impl<D: Read> Iterator for RowIterator<D> {
-  type Item = Result<Row, RowCellError>;
+  type Item = Result<Row, crate::table::TableError>;
   fn next(&mut self) -> Option<Self::Item> {
     /*
      * How in the world do we know we're done reading?
@@ -29,7 +29,7 @@ impl<D: Read> Iterator for RowIterator<D> {
      */
     let row = match Row::from_schema(&mut self.disk, &self.schema) {
       Ok(row) => row,
-      err @ Err(_) => return Some(err),
+      Err(err) => return Some(Err(err.into())),
     };
     if row.meta.is_last_row {
       log::debug!("Encountered the last row");
@@ -79,6 +79,10 @@ pub struct Row {
 }
 
 impl Row {
+  pub fn data(&self) -> &[u8] {
+    &self.data
+  }
+
   pub fn row_iterator<'a, D: Read + Seek>(
     mut disk: D,
     schema: Schema,

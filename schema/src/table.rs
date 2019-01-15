@@ -1,15 +1,23 @@
 use crate::field::Field;
-use crate::{FieldKind, OwnedRowCell, Row, RowCellError};
+use crate::{FieldKind, OwnedRowCell, Row, RowCell, RowCellError};
+use std::collections::BTreeMap;
 
 #[derive(Debug)]
 pub enum TableError {
   RowCell(RowCellError),
-  Other(String)
+  Other(String),
+  Io(std::io::Error),
 }
 
 impl From<RowCellError> for TableError {
   fn from(err: RowCellError) -> TableError {
     TableError::RowCell(err)
+  }
+}
+
+impl From<std::io::Error> for TableError {
+  fn from(err: std::io::Error) -> TableError {
+    TableError::Io(err)
   }
 }
 
@@ -43,17 +51,13 @@ impl<'a> From<&'a crate::SchemaField> for TableField {
   }
 }
 
-pub trait Table: Iterator<Item = Result<Row, RowCellError>> {
+pub trait Table: Iterator<Item = Result<Row, TableError>> {
   fn schema(&self) -> Vec<TableField>;
   fn map_schema(self, schema: Vec<TableField>) -> MapSchema<Self>
   where
     Self: Sized,
   {
-    MapSchema {
-      prev_schema: self.schema().to_vec(),
-      schema,
-      iter: self,
-    }
+    MapSchema::new(self.schema().to_vec(), schema, self)
   }
 
   fn into_iter_cells<T>(self) -> IntoIterCells<Self>
@@ -76,43 +80,53 @@ impl<I> Iterator for IntoIterCells<I>
 where
   I: Table,
 {
-  type Item = Result<Vec<OwnedRowCell>, RowCellError>;
+  type Item = Result<Vec<OwnedRowCell>, TableError>;
   fn next(&mut self) -> Option<Self::Item> {
     let next = self.iter.next()?;
-    Some(next.and_then(|row| row.into_cells(&self.schema)))
+    Some(next.and_then(|row| {
+      row
+        .into_cells(&self.schema)
+        .map_err(|err| TableError::from(err))
+    }))
   }
 }
 
 pub struct MapSchema<I> {
-  prev_schema: Vec<TableField>,
+  prev_schema_lookup: BTreeMap<String, (TableField, usize)>,
   schema: Vec<TableField>,
   iter: I,
+}
+
+impl<I: Table> MapSchema<I> {
+  fn new(prev_schema: Vec<TableField>, schema: Vec<TableField>, iter: I) -> Self {
+    let prev_schema_lookup = {
+      let mut table: BTreeMap<String, (TableField, usize)> = BTreeMap::default();
+      let mut offset = 0;
+      for column in prev_schema.into_iter() {
+        let size = column.kind().size();
+        if let Some(name) = &column.name {
+          table.insert(name.clone(), (column, offset));
+        }
+        offset += size;
+      }
+      table
+    };
+    MapSchema {
+      prev_schema_lookup,
+      schema,
+      iter,
+    }
+  }
 }
 
 impl<I> Iterator for MapSchema<I>
 where
   I: Table,
 {
-  type Item = Result<Row, RowCellError>;
-  fn next(&mut self) -> Option<Result<Row, RowCellError>> {
+  type Item = Result<Row, TableError>;
+  fn next(&mut self) -> Option<Result<Row, TableError>> {
     let next = self.iter.next()?;
     let next = next.and_then(|row| {
-      // pre-compute a mapping of the name of the column in the previous
-      // schema to it's field
-      // TODO :: do this once
-      let prev_schema_lookup = {
-        use std::collections::BTreeMap;
-        let mut table: BTreeMap<&str, (&TableField, usize)> = BTreeMap::default();
-        let mut offset = 0;
-        for column in self.prev_schema.iter() {
-          if let Some(name) = &column.name {
-            table.insert(name, (column, offset));
-          }
-          offset += column.kind().size();
-        }
-        table
-      };
-
       let mut next_row: Vec<OwnedRowCell> = Vec::with_capacity(self.schema.len());
       for column in self.schema.iter() {
         match &column.literal_value {
@@ -136,9 +150,17 @@ where
           }
           None => {}
         };
-        match prev_schema_lookup.get(column.name) {
-          Some()
-        }
+        let column_name = match &column.name {
+          Some(name) => name,
+          None => return Err(TableError::Other(format!("Invalid schema"))),
+        };
+        match self.prev_schema_lookup.get(column_name.as_str()) {
+          Some((prev_column, offset)) => {
+            let data = RowCell::new(row.data(), prev_column, *offset)?;
+            next_row.push(data.into());
+          }
+          None => return Err(TableError::Other(format!("Invalid schema"))),
+        };
       }
       Ok(Row::from_cells(next_row)?)
     });
