@@ -230,9 +230,74 @@ impl<T: Disk> Database<T> {
 
         match &select_statement.table {
           Some(table) => {
+            use parser::{Expr, LiteralValue, ResultColumn};
+            use schema::FieldKind;
+            use schema::TableFieldLiteral;
             let table = self.get_table(table.text())?;
+            let mut next_schema = vec![];
+            for column in select_statement.columns.iter() {
+              match column {
+                ResultColumn::Asterisk => {
+                  for field in table.schema().fields().iter() {
+                    next_schema.push(schema::TableField::new(
+                      Some(field.name().to_string()),
+                      field.kind().clone(),
+                      None,
+                    ))
+                  }
+                }
+                ResultColumn::TableAsterisk(table) => {}
+                ResultColumn::Expr { value, alias } => match value {
+                  Expr::ColumnIdent(column_ident) => {
+                    let schema_column = table.schema().field(column_ident.column.text()).ok_or(
+                      DatabaseError::Other(format!(
+                        "Error: Could not find column {} in table",
+                        column_ident.column
+                      )),
+                    )?;
+
+                    next_schema.push(schema::TableField::new(
+                      Some(
+                        alias
+                          .as_ref()
+                          .map(|alias| alias.text())
+                          .unwrap_or(column_ident.column.text())
+                          .to_string(),
+                      ),
+                      schema_column.kind().clone(),
+                      None,
+                    ))
+                  }
+                  Expr::LiteralValue(literal_value) => {
+                    let alias = alias.as_ref().map(|alias| alias.text().to_string());
+                    let value = match literal_value {
+                      LiteralValue::NumericLiteral(num) => schema::TableField::new(
+                        alias,
+                        FieldKind::Number(8),
+                        Some(TableFieldLiteral::Number(*num)),
+                      ),
+                      LiteralValue::StringLiteral(string) => schema::TableField::new(
+                        alias,
+                        FieldKind::Str(string.len() as u64),
+                        Some(TableFieldLiteral::Str(string.to_string())),
+                      ),
+                      LiteralValue::BlobLiteral(blob) => schema::TableField::new(
+                        alias,
+                        FieldKind::Blob(blob.len() as u64),
+                        // TODO :: handle this error but ugh I want to see this work!
+                        Some(TableFieldLiteral::Blob(hex::decode(blob).unwrap())),
+                      ),
+                    };
+                    next_schema.push(value);
+                  }
+                },
+              }
+            }
+
             let blockdisk = BlockDisk::new(self, table.data_block_offset())?;
             let iter = schema::Row::row_iterator(blockdisk, table.schema().clone())?;
+
+            let iter = iter.map_schema(next_schema);
 
             Ok(Some(Box::new(iter)))
           }

@@ -1,5 +1,5 @@
-use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use crate::{FieldError, SchemaField};
+use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use std::io::{self, Read, Write};
 
 /// The schema for a given table.
@@ -64,6 +64,10 @@ impl Schema {
       offset += field.kind().size()
     }
     offset
+  }
+
+  pub fn field(&self, name: &str) -> Option<&SchemaField> {
+    self.fields.iter().find(|field| field.name() == name)
   }
 }
 

@@ -35,6 +35,20 @@ pub struct TableField {
   literal_value: Option<TableFieldLiteral>,
 }
 
+impl TableField {
+  pub fn new(
+    name: Option<String>,
+    kind: FieldKind,
+    literal_value: Option<TableFieldLiteral>,
+  ) -> TableField {
+    TableField {
+      name,
+      kind,
+      literal_value,
+    }
+  }
+}
+
 impl Field for TableField {
   fn kind(&self) -> &FieldKind {
     &self.kind

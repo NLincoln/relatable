@@ -6,4 +6,4 @@ mod table;
 pub use self::field::{FieldError, FieldKind, SchemaField};
 pub use self::row::{OwnedRowCell, Row, RowCell, RowCellError, RowIterator};
 pub use self::schema::{OnDiskSchema, Schema, SchemaError};
-pub use self::table::{Table, TableError, TableField};
+pub use self::table::{Table, TableError, TableField, TableFieldLiteral};
