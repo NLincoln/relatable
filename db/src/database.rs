@@ -295,6 +295,13 @@ impl<T: Disk> Database<T> {
     Ok(())
   }
 
+  fn read_table<'a>(&'a mut self, table_name: &str) -> Result<Vec<schema::Row>, DatabaseError> {
+    let table = self.get_table(table_name)?;
+    let blockdisk = BlockDisk::new(self, table.data_block_offset())?;
+    let iter = schema::Row::row_iterator(blockdisk, table.schema().clone())?;
+    Ok(iter.collect::<Result<Vec<schema::Row>, schema::TableError>>()?)
+  }
+
   fn create_table(&mut self, schema: Schema) -> Result<(), DatabaseError> {
     // Alright so the first thing we need to do is go find the
     // schema table and add this entry to it.
@@ -417,7 +424,7 @@ mod tests {
       let all_rows = database
         .read_table("users")?
         .into_iter()
-        .map(|row| row.unwrap().into_cells(schema.fields()).unwrap())
+        .map(|row| row.into_cells(schema.fields()).unwrap())
         .collect::<Vec<_>>();
 
       assert_eq!(all_rows, expected_rows);
