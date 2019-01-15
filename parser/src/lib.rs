@@ -6,7 +6,7 @@ mod tokenizer;
 pub use self::ast::*;
 use self::lang::{Kind, Sql};
 
-pub use self::grammar::parse;
+use self::grammar::parse;
 
 #[derive(Debug)]
 pub enum AstError<'a> {

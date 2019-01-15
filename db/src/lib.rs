@@ -9,4 +9,4 @@ mod inmemorydb;
 use self::block::Block;
 use self::blockdisk::BlockDisk;
 
-pub use self::database::Database;
+pub use self::database::{Database, DatabaseError, DatabaseQueryError};

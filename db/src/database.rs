@@ -1,7 +1,7 @@
 use crate::{Block, BlockDisk};
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use log::debug;
-use schema::{OnDiskSchema, Schema};
+use schema::{OnDiskSchema, Row, Schema, Table, TableError};
 use std::collections::BTreeMap;
 use std::io::{self, Read, Seek, Write};
 
@@ -135,23 +135,34 @@ impl<'a> From<parser::AstError<'a>> for DatabaseQueryError<'a> {
 }
 
 impl<T: Disk> Database<T> {
-  pub fn execute_query<'a, 'disk>(
+  pub fn execute_query<'a, 'disk, F>(
     &'disk mut self,
     query: &'a str,
-  ) -> Result<Vec<Result<Option<Vec<schema::Row>>, DatabaseError>>, parser::AstError<'a>> {
+    mut f: F,
+  ) -> Result<(), DatabaseQueryError<'a>>
+  where
+    F: FnMut(Option<Vec<schema::OwnedRowCell>>) -> (),
+  {
     let ast = parser::process_query(query)?;
-    Ok(
-      ast
-        .into_iter()
-        .map(|statement| self.process_statement(statement))
-        .collect::<Vec<_>>(),
-    )
-  }
+    for statement in ast.into_iter() {
+      match self.process_statement(&statement)? {
+        Some(result_iter) => {
+          let schema = result_iter.schema();
+          for row in result_iter {
+            let row = row.map_err(DatabaseError::from)?;
 
-  fn process_statement<'a, 'disk>(
+            (f)(Some(row.into_cells(&schema).map_err(DatabaseError::from)?))
+          }
+        }
+        None => (f)(None),
+      }
+    }
+    Ok(())
+  }
+  pub fn process_statement<'a, 'disk>(
     &'disk mut self,
-    ast: parser::Statement<'a>,
-  ) -> Result<Option<Vec<schema::Row>>, DatabaseError> {
+    ast: &parser::Statement<'a>,
+  ) -> Result<Option<Box<dyn Table<Item = Result<Row, TableError>> + 'disk>>, DatabaseError> {
     use parser::Statement;
     match ast {
       Statement::CreateTable(create_table_statement) => {
@@ -223,8 +234,7 @@ impl<T: Disk> Database<T> {
             let blockdisk = BlockDisk::new(self, table.data_block_offset())?;
             let iter = schema::Row::row_iterator(blockdisk, table.schema().clone())?;
 
-            let iter = iter.collect::<Result<Vec<_>, schema::TableError>>()?;
-            Ok(Some(iter))
+            Ok(Some(Box::new(iter)))
           }
           None => Ok(None),
         }

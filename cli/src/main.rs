@@ -1,4 +1,4 @@
-use db::Database;
+use db::{Database, DatabaseQueryError};
 use std::{
   env, fs,
   io::{self, Write},
@@ -38,10 +38,11 @@ fn main() -> Result<(), schema::SchemaError> {
     }
 
     let query = fs::read_to_string(&args[3])?;
-    let results = database.execute_query(&query).unwrap();
-    for result in results {
-      println!("{:?}", result);
-    }
+    database
+      .execute_query(&query, |row| {
+        println!("{:?}", row);
+      })
+      .unwrap();
   } else if op == "repl" {
     loop {
       print!("> ");
@@ -54,7 +55,10 @@ fn main() -> Result<(), schema::SchemaError> {
       if query == "exit" {
         break;
       }
-      match database.execute_query(&query) {
+
+      match database.execute_query(&query, |row| {
+        println!("{:?}", row);
+      }) {
         Ok(result) => println!("{:?}", result),
         Err(err) => println!("{:?}", err),
       };
