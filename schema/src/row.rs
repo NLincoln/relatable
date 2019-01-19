@@ -314,7 +314,7 @@ impl<'a> RowCell<'a> {
     match field.kind() {
       FieldKind::Number(n) => {
         let n = *n;
-        let mut cursor = io::Cursor::new(data);
+        let mut cursor = io::Cursor::new(slice);
         Ok(RowCell::Number {
           value: cursor.read_int::<BigEndian>(n as usize).unwrap(),
           size: n,
