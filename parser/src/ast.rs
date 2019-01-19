@@ -98,7 +98,6 @@ pub enum LiteralValue<'a> {
   NumericLiteral(i64),
   StringLiteral(&'a str),
   BlobLiteral(&'a str),
-  Null,
 }
 
 #[derive(Debug, Clone, PartialEq)]

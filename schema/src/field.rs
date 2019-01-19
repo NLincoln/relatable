@@ -2,26 +2,36 @@ use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use crate::SchemaError;
 use std::io::{Read, Write};
 
-/// A Field represents a column in the database
+pub trait Field {
+  fn kind(&self) -> &FieldKind;
+}
+
+/// A Field represents a column in a table
 /// This enum doesn't actually have the data associated
 /// with it, instead you combine this with a set of bytes
 /// and use that to extract the data
 #[derive(Debug, PartialEq, Clone)]
-pub struct Field {
+pub struct SchemaField {
   kind: FieldKind,
   name: String,
 }
 
-impl Field {
+impl Field for SchemaField {
+  fn kind(&self) -> &FieldKind {
+    &self.kind
+  }
+}
+
+impl SchemaField {
   /// Creates a new field with the given kind and name
-  pub fn new(kind: FieldKind, name: String) -> Result<Field, FieldError> {
+  pub fn new(kind: FieldKind, name: String) -> Result<SchemaField, FieldError> {
     if let FieldKind::Number(n) = kind {
       if n.count_ones() != 1 || n > 8 {
         return Err(FieldError::InvalidNumberType(n));
       }
     }
 
-    Ok(Field { kind, name })
+    Ok(SchemaField { kind, name })
   }
 
   pub(crate) fn persist(&self, disk: &mut impl Write) -> Result<(), SchemaError> {
@@ -34,7 +44,7 @@ impl Field {
     Ok(())
   }
   /// Returns (num bytes read, Field)
-  pub(crate) fn from_persisted(disk: &mut impl Read) -> Result<Field, SchemaError> {
+  pub(crate) fn from_persisted(disk: &mut impl Read) -> Result<SchemaField, SchemaError> {
     let name_len = disk.read_u16::<BigEndian>()?;
     log::debug!("Reading field");
     log::debug!("-> name_len is {}", name_len);
@@ -44,7 +54,7 @@ impl Field {
     log::debug!("-> Name is {}", name);
     let kind = FieldKind::from_persisted(disk)?;
     log::debug!("-> FieldKind is {:?}", kind);
-    Ok(Field { name, kind })
+    Ok(SchemaField { name, kind })
   }
 
   pub fn kind(&self) -> &FieldKind {
@@ -63,15 +73,15 @@ impl Field {
     match type_name.name {
       Type::Integer => {
         let size = type_name.argument.unwrap_or(8);
-        Ok(Field::new(FieldKind::Number(size as u8), name)?)
+        Ok(SchemaField::new(FieldKind::Number(size as u8), name)?)
       }
       Type::Blob => {
         let size = type_name.argument.unwrap_or(100);
-        Ok(Field::new(FieldKind::Blob(size as u64), name)?)
+        Ok(SchemaField::new(FieldKind::Blob(size as u64), name)?)
       }
       Type::Varchar => {
         let size = type_name.argument.unwrap_or(128);
-        Ok(Field::new(FieldKind::Str(size as u64), name)?)
+        Ok(SchemaField::new(FieldKind::Str(size as u64), name)?)
       }
     }
   }
@@ -111,7 +121,7 @@ impl FieldKind {
   const BLOB_TAG: u8 = 2;
   const STR_TAG: u8 = 3;
 
-  pub(crate) fn size(&self) -> usize {
+  pub fn size(&self) -> usize {
     match self {
       FieldKind::Number(n) => *n as usize,
       FieldKind::Blob(n) => *n as usize,

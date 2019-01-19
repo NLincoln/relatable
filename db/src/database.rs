@@ -1,9 +1,9 @@
+use crate::table::{Table, TableError};
 use crate::{Block, BlockDisk};
-use log::debug;
-use schema::{OnDiskSchema, Schema};
-use std::collections::BTreeMap;
-
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+use log::debug;
+use schema::{OnDiskSchema, Row, Schema};
+use std::collections::BTreeMap;
 use std::io::{self, Read, Seek, Write};
 
 /// Convenience trait for read + write + seek
@@ -81,6 +81,7 @@ pub enum DatabaseError {
   Schema(schema::SchemaError),
   Io(io::Error),
   FieldError(schema::FieldError),
+  TableError(TableError),
   // basically a catch all because I'm lazy
   // todo -> make proper enumeriations for all
   // these cases
@@ -111,6 +112,12 @@ impl From<schema::FieldError> for DatabaseError {
   }
 }
 
+impl From<TableError> for DatabaseError {
+  fn from(err: TableError) -> Self {
+    DatabaseError::TableError(err)
+  }
+}
+
 #[derive(Debug)]
 pub enum DatabaseQueryError<'a> {
   InternalError(DatabaseError),
@@ -129,21 +136,35 @@ impl<'a> From<parser::AstError<'a>> for DatabaseQueryError<'a> {
 }
 
 impl<T: Disk> Database<T> {
-  pub fn execute_query<'a>(
-    &mut self,
+  pub fn execute_query<'a, 'disk, F>(
+    &'disk mut self,
     query: &'a str,
-  ) -> Result<Vec<Vec<schema::Row>>, DatabaseQueryError<'a>> {
+    mut f: F,
+  ) -> Result<(), DatabaseQueryError<'a>>
+  where
+    F: FnMut(Option<Vec<schema::OwnedRowCell>>) -> (),
+  {
     let ast = parser::process_query(query)?;
-    let mut result = Vec::with_capacity(ast.len());
-    for statement in ast.iter() {
-      result.push(self.process_statement(statement)?);
+    for statement in ast.into_iter() {
+      match self.process_statement(&statement)? {
+        Some(mut result_iter) => {
+          let schema = result_iter.schema();
+          while let Some(row) = result_iter
+            .next_row(self)
+            .map_err(DatabaseError::TableError)?
+          {
+            (f)(Some(row.into_cells(&schema).map_err(DatabaseError::from)?))
+          }
+        }
+        None => (f)(None),
+      }
     }
-    Ok(result)
+    Ok(())
   }
-  fn process_statement<'a>(
-    &mut self,
+  pub fn process_statement<'a, 'disk>(
+    &'disk mut self,
     ast: &parser::Statement<'a>,
-  ) -> Result<Vec<schema::Row>, DatabaseError> {
+  ) -> Result<Option<Box<dyn Table>>, DatabaseError> {
     use parser::Statement;
     match ast {
       Statement::CreateTable(create_table_statement) => {
@@ -155,17 +176,18 @@ impl<T: Disk> Database<T> {
           )));
         }
 
-        let mut schema_fields = vec![];
-        for column_def in create_table_statement.column_defs.iter() {
-          schema_fields.push(schema::Field::from_column_def(column_def)?);
-        }
+        let schema_fields = create_table_statement
+          .column_defs
+          .iter()
+          .map(schema::SchemaField::from_column_def)
+          .collect::<Result<Vec<_>, schema::FieldError>>()?;
 
         let schema = schema::Schema::from_fields(
           create_table_statement.table_name.text().to_string(),
           schema_fields,
         );
         self.create_table(schema)?;
-        return Ok(vec![]);
+        return Ok(None);
       }
       Statement::Insert(insert_statement) => {
         use parser::InsertStatementValues as Values;
@@ -193,13 +215,13 @@ impl<T: Disk> Database<T> {
         match &insert_statement.values {
           Values::SingleRow(row) => {
             self.insert_ast_row(schema, &row, &mapping)?;
-            Ok(vec![])
+            Ok(None)
           }
           Values::MultipleRows(rows) => {
             for row in rows.iter() {
               self.insert_ast_row(schema, &row, &mapping)?;
             }
-            Ok(vec![])
+            Ok(None)
           }
         }
       }
@@ -207,9 +229,81 @@ impl<T: Disk> Database<T> {
         // I'm just going to go ahead and say that nothing except the barest
         // select * from table queries are allowed. Too much complexity for right here.
         // I think next I'll work on a Table abstraction
+
         match &select_statement.table {
-          Some(table) => self.read_table(table.text()),
-          None => Ok(vec![]),
+          Some(table) => {
+            use crate::table::TableField;
+            use crate::table::TableFieldLiteral;
+            use parser::{Expr, LiteralValue, ResultColumn};
+            use schema::FieldKind;
+            let table = self.get_table(table.text())?;
+            let mut next_schema = vec![];
+            for column in select_statement.columns.iter() {
+              match column {
+                ResultColumn::Asterisk => {
+                  for field in table.schema().fields().iter() {
+                    next_schema.push(TableField::new(
+                      Some(field.name().to_string()),
+                      field.kind().clone(),
+                      None,
+                    ))
+                  }
+                }
+                ResultColumn::TableAsterisk(table) => unimplemented!(),
+                ResultColumn::Expr { value, alias } => match value {
+                  Expr::ColumnIdent(column_ident) => {
+                    let schema_column = table.schema().field(column_ident.column.text()).ok_or(
+                      DatabaseError::Other(format!(
+                        "Error: Could not find column {} in table",
+                        column_ident.column
+                      )),
+                    )?;
+
+                    next_schema.push(TableField::new(
+                      Some(
+                        alias
+                          .as_ref()
+                          .map(|alias| alias.text())
+                          .unwrap_or(column_ident.column.text())
+                          .to_string(),
+                      ),
+                      schema_column.kind().clone(),
+                      None,
+                    ))
+                  }
+                  Expr::LiteralValue(literal_value) => {
+                    let alias = alias.as_ref().map(|alias| alias.text().to_string());
+                    let value = match literal_value {
+                      LiteralValue::NumericLiteral(num) => TableField::new(
+                        alias,
+                        FieldKind::Number(8),
+                        Some(TableFieldLiteral::Number(*num)),
+                      ),
+                      LiteralValue::StringLiteral(string) => TableField::new(
+                        alias,
+                        FieldKind::Str(string.len() as u64),
+                        Some(TableFieldLiteral::Str(string.to_string())),
+                      ),
+                      LiteralValue::BlobLiteral(blob) => TableField::new(
+                        alias,
+                        FieldKind::Blob(blob.len() as u64),
+                        // TODO :: handle this error but ugh I want to see this work!
+                        Some(TableFieldLiteral::Blob(hex::decode(blob).unwrap())),
+                      ),
+                    };
+                    next_schema.push(value);
+                  }
+                },
+              }
+            }
+
+            let iter = crate::table::SchemaReader::new(table);
+
+            let iter = iter.map_schema(next_schema);
+
+            Ok(Some(Box::new(iter)))
+          }
+          None => Ok(None),
         }
       }
     }
@@ -233,7 +327,7 @@ impl<T: Disk> Database<T> {
           return Err(DatabaseError::Other(format!(
             "Could not insert into {}: Invalid Cell",
             schema.name()
-          )))
+          )));
         }
       }
     }
@@ -250,11 +344,7 @@ impl<T: Disk> Database<T> {
         table_name: table_name.to_string(),
       })
   }
-  pub fn add_row(
-    &mut self,
-    table: &str,
-    row: Vec<schema::OwnedRowCell>,
-  ) -> Result<(), DatabaseError> {
+  fn add_row(&mut self, table: &str, row: Vec<schema::OwnedRowCell>) -> Result<(), DatabaseError> {
     debug!("Adding row to table");
     let schema = self.get_table(table)?;
     // elements in the row must be coercible to the tables schema
@@ -271,7 +361,7 @@ impl<T: Disk> Database<T> {
             "Could not insert into {}: The data provided for column {} is invalid",
             table,
             field.name()
-          )))
+          )));
         }
       }
     }
@@ -282,19 +372,19 @@ impl<T: Disk> Database<T> {
     Ok(())
   }
 
-  pub fn read_table(&mut self, table_name: &str) -> Result<Vec<schema::Row>, DatabaseError> {
+  #[allow(dead_code)]
+  fn read_table<'a>(
+    &'a mut self,
+    table_name: &str,
+  ) -> Result<Vec<Vec<schema::OwnedRowCell>>, DatabaseError> {
     let table = self.get_table(table_name)?;
-    let mut blockdisk = BlockDisk::new(self, table.data_block_offset())?;
-    let mut rows = vec![];
-    for row in schema::Row::row_iterator(&mut blockdisk, table.schema())? {
-      log::debug!("Row was read");
-      let row = row?;
-      rows.push(row);
-    }
-    Ok(rows)
+    let iter = crate::table::SchemaReader::new(table);
+    let iter = iter.into_iter_cells(self);
+
+    Ok(iter.collect::<Result<Vec<_>, TableError>>()?)
   }
 
-  pub fn create_table(&mut self, schema: Schema) -> Result<(), DatabaseError> {
+  fn create_table(&mut self, schema: Schema) -> Result<(), DatabaseError> {
     // Alright so the first thing we need to do is go find the
     // schema table and add this entry to it.
     debug!("Creating Table");
@@ -376,6 +466,28 @@ impl<T: Disk> BlockAllocator for Database<T> {
     block.persist(&mut self.disk).map(|_| ())
   }
 }
+use crate::table::RowReader;
+
+impl<T: Disk> RowReader for Database<T> {
+  fn read_nth_row(&mut self, schema: &OnDiskSchema, index: u64) -> Result<Option<Row>, TableError> {
+    // TODO :: cache this because it's gonna be SLOOWWWWWW
+    log::debug!("Reading row {} for table {}", index, schema.schema().name());
+    let mut blockdisk = BlockDisk::new(self, schema.data_block_offset())?;
+
+    blockdisk.seek(io::SeekFrom::Start(
+      Row::sizeof_row_on_disk(schema.schema()) as u64 * index,
+    ))?;
+
+    let row = Row::from_schema(&mut blockdisk, schema.schema())?;
+    if row.is_last_row() {
+      log::debug!("row is last row!");
+      Ok(None)
+    } else {
+      log::debug!("more rows to go!");
+      Ok(Some(row))
+    }
+  }
+}
 
 #[cfg(test)]
 mod tests {
@@ -384,15 +496,17 @@ mod tests {
 
   #[test]
   fn test_adding_rows() -> Result<(), DatabaseError> {
-    use schema::{Field, FieldKind};
+    use schema::{FieldKind, SchemaField};
 
     // Disk should have two blocks: one for the dbmeta and an empty schema block
     let mut database = Database::new(io::Cursor::new(vec![]))?;
     let schema = Schema::from_fields(
       "users".into(),
       vec![
-        Field::new(FieldKind::Number(8), "id".into()).map_err(|err| SchemaError::from(err))?,
-        Field::new(FieldKind::Str(20), "username".into()).map_err(|err| SchemaError::from(err))?,
+        SchemaField::new(FieldKind::Number(8), "id".into())
+          .map_err(|err| SchemaError::from(err))?,
+        SchemaField::new(FieldKind::Str(20), "username".into())
+          .map_err(|err| SchemaError::from(err))?,
       ],
     );
     use schema::OwnedRowCell;
@@ -413,9 +527,7 @@ mod tests {
 
       let all_rows = database
         .read_table("users")?
-        .clone()
         .into_iter()
-        .map(|row| row.into_cells(&schema).unwrap())
         .collect::<Vec<_>>();
 
       assert_eq!(all_rows, expected_rows);
@@ -425,16 +537,16 @@ mod tests {
   }
   #[test]
   fn test_adding_a_bunch_of_tables() -> Result<(), DatabaseError> {
-    use schema::{Field, FieldKind};
+    use schema::{FieldKind, SchemaField};
     let mut database = Database::new(io::Cursor::new(vec![]))?;
     let schema = Schema::from_fields(
       "the_name".into(),
       vec![
-        Field::new(FieldKind::Blob(10), "id".into())?,
-        Field::new(FieldKind::Blob(10), "id2".into())?,
-        Field::new(FieldKind::Blob(10), "id3".into())?,
-        Field::new(FieldKind::Blob(10), "id4".into())?,
-        Field::new(FieldKind::Blob(10), "id5".into())?,
+        SchemaField::new(FieldKind::Blob(10), "id".into())?,
+        SchemaField::new(FieldKind::Blob(10), "id2".into())?,
+        SchemaField::new(FieldKind::Blob(10), "id3".into())?,
+        SchemaField::new(FieldKind::Blob(10), "id4".into())?,
+        SchemaField::new(FieldKind::Blob(10), "id5".into())?,
       ],
     );
     let mut expected_tables = vec![];
