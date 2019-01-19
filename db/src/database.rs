@@ -249,7 +249,7 @@ impl<T: Disk> Database<T> {
                     ))
                   }
                 }
-                ResultColumn::TableAsterisk(table) => {}
+                ResultColumn::TableAsterisk(table) => unimplemented!(),
                 ResultColumn::Expr { value, alias } => match value {
                   Expr::ColumnIdent(column_ident) => {
                     let schema_column = table.schema().field(column_ident.column.text()).ok_or(
