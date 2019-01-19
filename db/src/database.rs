@@ -1,7 +1,8 @@
+use crate::table::{Table, TableError};
 use crate::{Block, BlockDisk};
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use log::debug;
-use schema::{OnDiskSchema, Row, Schema, Table, TableError};
+use schema::{OnDiskSchema, Row, Schema};
 use std::collections::BTreeMap;
 use std::io::{self, Read, Seek, Write};
 
@@ -80,7 +81,7 @@ pub enum DatabaseError {
   Schema(schema::SchemaError),
   Io(io::Error),
   FieldError(schema::FieldError),
-  TableError(schema::TableError),
+  TableError(TableError),
   // basically a catch all because I'm lazy
   // todo -> make proper enumeriations for all
   // these cases
@@ -111,8 +112,8 @@ impl From<schema::FieldError> for DatabaseError {
   }
 }
 
-impl From<schema::TableError> for DatabaseError {
-  fn from(err: schema::TableError) -> Self {
+impl From<TableError> for DatabaseError {
+  fn from(err: TableError) -> Self {
     DatabaseError::TableError(err)
   }
 }
@@ -146,11 +147,12 @@ impl<T: Disk> Database<T> {
     let ast = parser::process_query(query)?;
     for statement in ast.into_iter() {
       match self.process_statement(&statement)? {
-        Some(result_iter) => {
+        Some(mut result_iter) => {
           let schema = result_iter.schema();
-          for row in result_iter {
-            let row = row.map_err(DatabaseError::from)?;
-
+          while let Some(row) = result_iter
+            .next_row(self)
+            .map_err(DatabaseError::TableError)?
+          {
             (f)(Some(row.into_cells(&schema).map_err(DatabaseError::from)?))
           }
         }
@@ -162,7 +164,7 @@ impl<T: Disk> Database<T> {
   pub fn process_statement<'a, 'disk>(
     &'disk mut self,
     ast: &parser::Statement<'a>,
-  ) -> Result<Option<Box<dyn Table<Item = Result<Row, TableError>> + 'disk>>, DatabaseError> {
+  ) -> Result<Option<Box<dyn Table>>, DatabaseError> {
     use parser::Statement;
     match ast {
       Statement::CreateTable(create_table_statement) => {
@@ -230,16 +232,17 @@ impl<T: Disk> Database<T> {
 
         match &select_statement.table {
           Some(table) => {
+            use crate::table::TableField;
+            use crate::table::TableFieldLiteral;
             use parser::{Expr, LiteralValue, ResultColumn};
             use schema::FieldKind;
-            use schema::TableFieldLiteral;
             let table = self.get_table(table.text())?;
             let mut next_schema = vec![];
             for column in select_statement.columns.iter() {
               match column {
                 ResultColumn::Asterisk => {
                   for field in table.schema().fields().iter() {
-                    next_schema.push(schema::TableField::new(
+                    next_schema.push(TableField::new(
                       Some(field.name().to_string()),
                       field.kind().clone(),
                       None,
@@ -256,7 +259,7 @@ impl<T: Disk> Database<T> {
                       )),
                     )?;
 
-                    next_schema.push(schema::TableField::new(
+                    next_schema.push(TableField::new(
                       Some(
                         alias
                           .as_ref()
@@ -271,17 +274,17 @@ impl<T: Disk> Database<T> {
                   Expr::LiteralValue(literal_value) => {
                     let alias = alias.as_ref().map(|alias| alias.text().to_string());
                     let value = match literal_value {
-                      LiteralValue::NumericLiteral(num) => schema::TableField::new(
+                      LiteralValue::NumericLiteral(num) => TableField::new(
                         alias,
                         FieldKind::Number(8),
                         Some(TableFieldLiteral::Number(*num)),
                       ),
-                      LiteralValue::StringLiteral(string) => schema::TableField::new(
+                      LiteralValue::StringLiteral(string) => TableField::new(
                         alias,
                         FieldKind::Str(string.len() as u64),
                         Some(TableFieldLiteral::Str(string.to_string())),
                       ),
-                      LiteralValue::BlobLiteral(blob) => schema::TableField::new(
+                      LiteralValue::BlobLiteral(blob) => TableField::new(
                         alias,
                         FieldKind::Blob(blob.len() as u64),
                         // TODO :: handle this error but ugh I want to see this work!
@@ -294,8 +297,7 @@ impl<T: Disk> Database<T> {
               }
             }
 
-            let blockdisk = BlockDisk::new(self, table.data_block_offset())?;
-            let iter = schema::Row::row_iterator(blockdisk, table.schema().clone())?;
+            let iter = crate::table::SchemaReader::new(table);
 
             let iter = iter.map_schema(next_schema);
 
@@ -325,7 +327,7 @@ impl<T: Disk> Database<T> {
           return Err(DatabaseError::Other(format!(
             "Could not insert into {}: Invalid Cell",
             schema.name()
-          )))
+          )));
         }
       }
     }
@@ -359,7 +361,7 @@ impl<T: Disk> Database<T> {
             "Could not insert into {}: The data provided for column {} is invalid",
             table,
             field.name()
-          )))
+          )));
         }
       }
     }
@@ -370,11 +372,16 @@ impl<T: Disk> Database<T> {
     Ok(())
   }
 
-  fn read_table<'a>(&'a mut self, table_name: &str) -> Result<Vec<schema::Row>, DatabaseError> {
+  #[allow(dead_code)]
+  fn read_table<'a>(
+    &'a mut self,
+    table_name: &str,
+  ) -> Result<Vec<Vec<schema::OwnedRowCell>>, DatabaseError> {
     let table = self.get_table(table_name)?;
-    let blockdisk = BlockDisk::new(self, table.data_block_offset())?;
-    let iter = schema::Row::row_iterator(blockdisk, table.schema().clone())?;
-    Ok(iter.collect::<Result<Vec<schema::Row>, schema::TableError>>()?)
+    let iter = crate::table::SchemaReader::new(table);
+    let iter = iter.into_iter_cells(self);
+
+    Ok(iter.collect::<Result<Vec<_>, TableError>>()?)
   }
 
   fn create_table(&mut self, schema: Schema) -> Result<(), DatabaseError> {
@@ -459,6 +466,28 @@ impl<T: Disk> BlockAllocator for Database<T> {
     block.persist(&mut self.disk).map(|_| ())
   }
 }
+use crate::table::RowReader;
+
+impl<T: Disk> RowReader for Database<T> {
+  fn read_nth_row(&mut self, schema: &OnDiskSchema, index: u64) -> Result<Option<Row>, TableError> {
+    // TODO :: cache this because it's gonna be SLOOWWWWWW
+    log::debug!("Reading row {} for table {}", index, schema.schema().name());
+    let mut blockdisk = BlockDisk::new(self, schema.data_block_offset())?;
+
+    blockdisk.seek(io::SeekFrom::Start(
+      Row::sizeof_row_on_disk(schema.schema()) as u64 * index,
+    ))?;
+
+    let row = Row::from_schema(&mut blockdisk, schema.schema())?;
+    if row.is_last_row() {
+      log::debug!("row is last row!");
+      Ok(None)
+    } else {
+      log::debug!("more rows to go!");
+      Ok(Some(row))
+    }
+  }
+}
 
 #[cfg(test)]
 mod tests {
@@ -499,7 +528,6 @@ mod tests {
       let all_rows = database
         .read_table("users")?
         .into_iter()
-        .map(|row| row.into_cells(schema.fields()).unwrap())
         .collect::<Vec<_>>();
 
       assert_eq!(all_rows, expected_rows);

@@ -1,51 +1,8 @@
 use crate::field::Field;
-use crate::table::Table;
 use crate::{FieldKind, Schema};
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use std::io::{self, Read, Seek, Write};
 use std::str::Utf8Error;
-
-pub struct RowIterator<D: Read> {
-  disk: D,
-  schema: Schema,
-}
-
-impl<D: Read> Iterator for RowIterator<D> {
-  type Item = Result<Row, crate::table::TableError>;
-  fn next(&mut self) -> Option<Self::Item> {
-    /*
-     * How in the world do we know we're done reading?
-     * I think atm I'm inclined to make a magic byte at the beginning
-     * of the row saying whether or not it's the "last" row. Meaning
-     * I need a RowMeta.
-     *
-     * Unfortunately due to the stateless nature Iterator
-     * I have to read the _previous_ row in to know if it's the last.
-     * Ugh I think I'll just change it so there's a sentinal row at the end
-     * instead. That way there's always at least one row in the table.
-     *
-     * This is ugly but it's more of a hack until I can get btree tables working.
-     * The hacks are also contained to this file (including stuff like RowMeta)
-     */
-    let row = match Row::from_schema(&mut self.disk, &self.schema) {
-      Ok(row) => row,
-      Err(err) => return Some(Err(err.into())),
-    };
-    if row.meta.is_last_row {
-      log::debug!("Encountered the last row");
-      None
-    } else {
-      log::debug!("Encountered existing row");
-      Some(Ok(row))
-    }
-  }
-}
-
-impl<D: Read> Table for RowIterator<D> {
-  fn schema(&self) -> Vec<crate::TableField> {
-    self.schema.fields().iter().map(Into::into).collect()
-  }
-}
 
 #[derive(Debug, Clone)]
 struct RowMeta {
@@ -79,16 +36,25 @@ pub struct Row {
 }
 
 impl Row {
+  pub fn sizeof_row_on_disk(schema: &Schema) -> usize {
+    schema.sizeof_row() + RowMeta::size()
+  }
+
+  pub fn is_last_row(&self) -> bool {
+    self.meta.is_last_row
+  }
   pub fn data(&self) -> &[u8] {
     &self.data
   }
+  pub fn into_data(self) -> Vec<u8> {
+    self.data
+  }
 
-  pub fn row_iterator<'a, D: Read + Seek>(
-    mut disk: D,
-    schema: Schema,
-  ) -> io::Result<RowIterator<D>> {
-    disk.seek(io::SeekFrom::Start(0))?;
-    Ok(RowIterator { disk, schema })
+  pub fn from_data(data: Vec<u8>) -> Self {
+    Row {
+      data,
+      meta: RowMeta { is_last_row: false },
+    }
   }
 
   pub fn from_schema(disk: &mut impl Read, schema: &Schema) -> Result<Self, RowCellError> {

@@ -121,7 +121,7 @@ impl FieldKind {
   const BLOB_TAG: u8 = 2;
   const STR_TAG: u8 = 3;
 
-  pub(crate) fn size(&self) -> usize {
+  pub fn size(&self) -> usize {
     match self {
       FieldKind::Number(n) => *n as usize,
       FieldKind::Blob(n) => *n as usize,
