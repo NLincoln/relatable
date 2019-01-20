@@ -82,6 +82,7 @@ pub enum DatabaseError {
   Io(io::Error),
   FieldError(schema::FieldError),
   TableError(TableError),
+  AstError(parser::AstError),
   // basically a catch all because I'm lazy
   // todo -> make proper enumeriations for all
   // these cases
@@ -119,28 +120,23 @@ impl From<TableError> for DatabaseError {
 }
 
 #[derive(Debug)]
-pub enum DatabaseQueryError<'a> {
+pub enum DatabaseQueryError {
   InternalError(DatabaseError),
-  AstError(parser::AstError<'a>),
+  AstError(parser::AstError),
 }
 
-impl<'a> From<DatabaseError> for DatabaseQueryError<'a> {
-  fn from(err: DatabaseError) -> Self {
-    DatabaseQueryError::InternalError(err)
-  }
-}
-impl<'a> From<parser::AstError<'a>> for DatabaseQueryError<'a> {
-  fn from(err: parser::AstError<'a>) -> Self {
-    DatabaseQueryError::AstError(err)
+impl From<parser::AstError> for DatabaseError {
+  fn from(err: parser::AstError) -> Self {
+    DatabaseError::AstError(err)
   }
 }
 
 impl<T: Disk> Database<T> {
-  pub fn execute_query<'a, 'disk, F>(
+  pub fn execute_query<'disk, F>(
     &'disk mut self,
-    query: &'a str,
+    query: String,
     mut f: F,
-  ) -> Result<(), DatabaseQueryError<'a>>
+  ) -> Result<(), DatabaseError>
   where
     F: FnMut(Option<Vec<schema::OwnedRowCell>>) -> (),
   {
@@ -161,9 +157,9 @@ impl<T: Disk> Database<T> {
     }
     Ok(())
   }
-  pub fn process_statement<'a>(
+  pub fn process_statement(
     &mut self,
-    ast: &parser::Statement<'a>,
+    ast: &parser::Statement,
   ) -> Result<Option<Box<dyn Table>>, DatabaseError> {
     use parser::Statement;
     match ast {
@@ -225,94 +221,127 @@ impl<T: Disk> Database<T> {
           }
         }
       }
-      Statement::Select(select_statement) => {
-        match &select_statement.table {
-          Some(table) => {
-            use crate::table::TableField;
-            use crate::table::TableFieldLiteral;
-            use parser::{Expr, LiteralValue, ResultColumn};
-            use schema::FieldKind;
-            let table = self.get_table(table.text())?;
-            let mut next_schema = vec![];
-            let mut alias_mapping: BTreeMap<&str, &str> = BTreeMap::new();
-            for column in select_statement.columns.iter() {
-              match column {
-                ResultColumn::Asterisk => {
-                  for field in table.schema().fields().iter() {
-                    next_schema.push(TableField::new(
-                      Some(field.name().to_string()),
-                      field.kind().clone(),
-                      None,
-                    ))
-                  }
-                }
-                ResultColumn::TableAsterisk(_table) => unimplemented!(),
-                ResultColumn::Expr { value, alias } => match value {
-                  Expr::ColumnIdent(column_ident) => {
-                    let schema_column = table.schema().field(column_ident.column.text()).ok_or(
-                      DatabaseError::Other(format!(
-                        "Error: Could not find column {} in table",
-                        column_ident.column
-                      )),
-                    )?;
-                    if let Some(alias) = alias {
-                      alias_mapping.insert(column_ident.column.text(), alias.text());
-                    }
-
-                    next_schema.push(TableField::new(
-                      Some(
-                        alias
-                          .as_ref()
-                          .map(|alias| alias.text())
-                          .unwrap_or(column_ident.column.text())
-                          .to_string(),
-                      ),
-                      schema_column.kind().clone(),
-                      None,
-                    ))
-                  }
-                  Expr::LiteralValue(literal_value) => {
-                    let alias = alias.as_ref().map(|alias| alias.text().to_string());
-                    let value = match literal_value {
-                      LiteralValue::NumericLiteral(num) => TableField::new(
-                        alias,
-                        FieldKind::Number(8),
-                        Some(TableFieldLiteral::Number(*num)),
-                      ),
-                      LiteralValue::StringLiteral(string) => TableField::new(
-                        alias,
-                        FieldKind::Str(string.len() as u64),
-                        Some(TableFieldLiteral::Str(string.to_string())),
-                      ),
-                      LiteralValue::BlobLiteral(blob) => TableField::new(
-                        alias,
-                        FieldKind::Blob(blob.len() as u64),
-                        // TODO :: handle this error but ugh I want to see this work!
-                        Some(TableFieldLiteral::Blob(hex::decode(blob).unwrap())),
-                      ),
-                    };
-                    next_schema.push(value);
-                  }
-                },
-              }
-            }
-
-            let iter = crate::table::SchemaReader::new(table);
-
-            let iter = iter.map_schema(next_schema, alias_mapping);
-
-            Ok(Some(Box::new(iter)))
-          }
-          None => Ok(None),
-        }
-      }
+      Statement::Select(select_statement) => self.read_select_statement(select_statement).map(Some),
     }
   }
 
-  fn insert_ast_row<'a>(
+  fn transform_literal_value_to_field(
+    literal_value: &parser::LiteralValue,
+    alias: Option<parser::Ident>,
+  ) -> crate::table::TableField {
+    use crate::table::TableField;
+    use crate::table::TableFieldLiteral;
+    use parser::LiteralValue;
+    use schema::FieldKind;
+
+    let alias = alias.map(|alias| parser::ColumnIdent {
+      name: alias,
+      table: None,
+    });
+    match literal_value {
+      LiteralValue::NumericLiteral(num) => TableField::new(
+        alias,
+        FieldKind::Number(8),
+        Some(TableFieldLiteral::Number(*num)),
+      ),
+      LiteralValue::StringLiteral(string) => TableField::new(
+        alias,
+        FieldKind::Str(string.len() as u64),
+        Some(TableFieldLiteral::Str(string.to_string())),
+      ),
+      LiteralValue::BlobLiteral(blob) => TableField::new(
+        alias,
+        FieldKind::Blob(blob.len() as u64),
+        // TODO :: handle this error but ugh I want to see this work!
+        Some(TableFieldLiteral::Blob(hex::decode(blob).unwrap())),
+      ),
+    }
+  }
+  fn create_schema_mapping_for_select_statement(
+    &mut self,
+    columns: &[parser::ResultColumn],
+    tables: &[parser::Ident],
+  ) -> Result<
+    (
+      Vec<crate::table::TableField>,
+      BTreeMap<parser::ColumnIdent, &str>,
+    ),
+    DatabaseError,
+  > {
+    unimplemented!()
+  }
+
+  fn read_select_statement(
+    &mut self,
+    select_statement: &parser::SelectStatement,
+  ) -> Result<Box<dyn Table>, DatabaseError> {
+    match &select_statement.tables {
+      Some(tables) => {
+        use crate::table::TableField;
+        use parser::{Expr, ResultColumn};
+
+        let table = self.get_table(table.text())?;
+        let mut next_schema = vec![];
+        let mut alias_mapping: BTreeMap<&str, &str> = BTreeMap::new();
+        for column in select_statement.columns.iter() {
+          match column {
+            ResultColumn::Asterisk => {
+              for field in table.schema().fields().iter() {
+                next_schema.push(TableField::new(
+                  Some(field.name().to_string()),
+                  field.kind().clone(),
+                  None,
+                ))
+              }
+            }
+            ResultColumn::TableAsterisk(_table) => unimplemented!(),
+            ResultColumn::Expr { value, alias } => {
+              match value {
+                Expr::ColumnIdent(column_ident) => {
+                  let schema_column = table.schema().field(column_ident.column.text()).ok_or(
+                    DatabaseError::Other(format!(
+                      "Error: Could not find column {} in table",
+                      column_ident.column
+                    )),
+                  )?;
+                  if let Some(alias) = alias {
+                    alias_mapping.insert(column_ident.column.text(), alias.text());
+                  }
+
+                  next_schema.push(TableField::new(
+                    Some(
+                      alias
+                        .as_ref()
+                        .map(|alias| alias.text())
+                        .unwrap_or(column_ident.column.text())
+                        .to_string(),
+                    ),
+                    schema_column.kind().clone(),
+                    None,
+                  ))
+                }
+                Expr::LiteralValue(literal_value) => {
+                  next_schema.push(Self::transform_literal_value_to_field(literal_value, alias));
+                }
+              }
+            }
+          }
+        }
+
+        let iter = crate::table::SchemaReader::new(table);
+
+        let iter = iter.map_schema(next_schema, alias_mapping);
+
+        Ok(Box::new(iter))
+      }
+      None => unimplemented!(),
+    }
+  }
+
+  fn insert_ast_row(
     &mut self,
     schema: &schema::Schema,
-    ast: &[parser::Expr<'a>],
+    ast: &[parser::Expr],
     mapping: &BTreeMap<usize, usize>,
   ) -> Result<(), DatabaseError> {
     // We don't have defaults for columns (yet). Assert that the columns are the same length

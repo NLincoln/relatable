@@ -1,6 +1,8 @@
 use schema::{
   Field, FieldKind, OnDiskSchema, OwnedRowCell, Row, RowCell, RowCellError, SchemaField,
 };
+
+use parser::ColumnIdent;
 use std::collections::BTreeMap;
 
 pub trait RowReader {
@@ -13,7 +15,7 @@ pub trait Table {
   fn map_schema(
     self,
     next_schema: Vec<TableField>,
-    alias_mapping: BTreeMap<&str, &str>,
+    alias_mapping: BTreeMap<ColumnIdent, &str>,
   ) -> MapSchema<Self>
   where
     Self: Sized,
@@ -48,12 +50,22 @@ impl SchemaReader {
 
 impl Table for SchemaReader {
   fn schema(&self) -> Vec<TableField> {
+    let table_name = self.schema.schema().name();
     self
       .schema
       .schema()
       .fields()
       .iter()
-      .map(|schema_field| TableField::from(schema_field))
+      .map(|schema_field| {
+        TableField::new(
+          Some(ColumnIdent {
+            name: schema_field.name().to_string().into(),
+            table: Some(table_name.to_string().into()),
+          }),
+          schema_field.kind().clone(),
+          None,
+        )
+      })
       .collect()
   }
   fn next_row(&mut self, disk: &mut dyn RowReader) -> Result<Option<Row>, TableError> {
@@ -120,7 +132,7 @@ impl<'a, I: Table> Iterator for IntoIterCells<'a, I> {
 }
 
 pub struct MapSchema<I> {
-  prev_schema_lookup: BTreeMap<String, (TableField, usize)>,
+  prev_schema_lookup: BTreeMap<ColumnIdent, (TableField, usize)>,
   schema: Vec<TableField>,
   iter: I,
 }
@@ -129,22 +141,25 @@ impl<I: Table> MapSchema<I> {
   fn new(
     prev_schema: Vec<TableField>,
     schema: Vec<TableField>,
-    alias_mapping: BTreeMap<&str, &str>,
+    alias_mapping: BTreeMap<ColumnIdent, &str>,
     iter: I,
   ) -> Self {
     let prev_schema_lookup = {
-      let mut table: BTreeMap<String, (TableField, usize)> = BTreeMap::default();
+      let mut table: BTreeMap<ColumnIdent, (TableField, usize)> = BTreeMap::default();
       let mut offset = 0;
-      for column in prev_schema.into_iter() {
-        let size = column.kind().size();
+      for field in prev_schema.into_iter() {
+        let size = field.kind().size();
         // ok so alias_mapping goes original_column -> alias_name
         // prev_schema is the actual, physical table itself.
-        if let Some(name) = &column.name {
+        if let Some(column) = &field.column {
           let real_name = alias_mapping
-            .get(name.as_str())
-            .map(|string| string.to_string())
-            .unwrap_or_else(|| name.clone());
-          table.insert(real_name, (column, offset));
+            .get(&column)
+            .map(|string| ColumnIdent {
+              name: string.to_string().into(),
+              table: None,
+            })
+            .unwrap_or_else(|| column.clone());
+          table.insert(real_name, (field, offset));
         }
         offset += size;
       }
@@ -169,8 +184,8 @@ where
       None => return Ok(None),
     };
     let mut next_row: Vec<OwnedRowCell> = Vec::with_capacity(self.schema.len());
-    for column in self.schema.iter() {
-      match &column.literal_value {
+    for field in self.schema.iter() {
+      match &field.literal_value {
         Some(literal) => {
           let row_val = match literal {
             TableFieldLiteral::Blob(data) => OwnedRowCell::Blob(data.clone()),
@@ -185,17 +200,17 @@ where
           };
           // TODO :: This unwrap should be safe, but we need to
           // make the types better
-          let row_val = row_val.coerce_to(column).unwrap();
+          let row_val = row_val.coerce_to(field).unwrap();
           next_row.push(row_val);
           continue;
         }
         None => {}
       };
-      let column_name = match &column.name {
+      let column = match &field.column {
         Some(name) => name,
         None => return Err(TableError::Other(format!("Invalid schema"))),
       };
-      match self.prev_schema_lookup.get(column_name.as_str()) {
+      match self.prev_schema_lookup.get(&column) {
         Some((prev_column, offset)) => {
           let data = RowCell::new(row.data(), prev_column, *offset)?;
           next_row.push(data.into());
@@ -238,25 +253,22 @@ pub enum TableFieldLiteral {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct TableField {
-  name: Option<String>,
+  column: Option<ColumnIdent>,
   kind: FieldKind,
   literal_value: Option<TableFieldLiteral>,
 }
 
 impl TableField {
-  pub fn name(&self) -> Option<&str> {
-    match &self.name {
-      Some(name) => Some(name.as_str()),
-      None => None,
-    }
+  pub fn name(&self) -> Option<&ColumnIdent> {
+    self.column.as_ref()
   }
   pub fn new(
-    name: Option<String>,
+    column: Option<ColumnIdent>,
     kind: FieldKind,
     literal_value: Option<TableFieldLiteral>,
   ) -> TableField {
     TableField {
-      name,
+      column,
       kind,
       literal_value,
     }
@@ -266,15 +278,5 @@ impl TableField {
 impl Field for TableField {
   fn kind(&self) -> &FieldKind {
     &self.kind
-  }
-}
-
-impl<'a> From<&'a SchemaField> for TableField {
-  fn from(field: &'a SchemaField) -> TableField {
-    TableField {
-      name: Some(field.name().to_string()),
-      kind: field.kind().clone(),
-      literal_value: None,
-    }
   }
 }

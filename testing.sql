@@ -1,9 +1,19 @@
-create table users (
+create table departments (
   id integer(8),
-  username varchar(20)
+  dept_name varchar(20)
 );
 
-insert into users (id, username) VALUE (1, 'nlincoln');
-insert into users (id, username) VALUE (2, 'other');
+insert into departments (id, dept_name) VALUES (1, 'management'), (2, 'engineering');
 
-select id, username from users;
+create table employees (
+  id integer(8),
+  username varchar(20),
+  department_id integer(8)
+);
+
+insert into employees (id, username, department_id) VALUES (1, 'nlincoln', 2), (2, 'manager', 1);
+
+select * from departments;
+select id, username, department_id from employees;
+
+select * from employees, departments;

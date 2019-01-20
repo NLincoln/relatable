@@ -2,6 +2,6 @@ mod field;
 mod row;
 mod schema;
 
-pub use self::field::{FieldError, FieldKind, SchemaField, Field};
-pub use self::row::{OwnedRowCell, Row, RowCell, RowCellError};
-pub use self::schema::{OnDiskSchema, Schema, SchemaError};
+pub use field::{Field, FieldError, FieldKind, SchemaField};
+pub use row::{OwnedRowCell, Row, RowCell, RowCellError};
+pub use schema::{OnDiskSchema, Schema, SchemaError};

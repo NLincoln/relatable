@@ -1,5 +1,5 @@
-use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use crate::SchemaError;
+use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use std::io::{Read, Write};
 
 pub trait Field {
@@ -64,9 +64,7 @@ impl SchemaField {
     &self.name
   }
 
-  pub fn from_column_def<'a, 'b>(
-    column_def: &'b parser::ColumnDef<'a>,
-  ) -> Result<Self, FieldError> {
+  pub fn from_column_def(column_def: &parser::ColumnDef) -> Result<Self, FieldError> {
     use parser::Type;
     let name = column_def.column_name.text().to_string();
     let type_name = &column_def.type_name;

@@ -27,10 +27,10 @@ impl fmt::Display for Pos {
 }
 
 /// A token in the grammar.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub struct Token<'a, K> {
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct Token<K> {
   pub kind: K,
-  pub value: &'a str,
+  pub value: String,
 }
 
 pub trait Language {
@@ -58,15 +58,15 @@ pub trait Language {
 /// The stream of tokens through the grammar
 /// This is usually what you want to be passing around when building the grammar.
 #[derive(Debug)]
-pub struct TokenStream<'a, L: Language> {
+pub struct TokenStream<L: Language> {
   keywords: Vec<Keyword<L::Kind>>,
   punctuation: Vec<Punctuation<L::Kind>>,
   regexes: Vec<RegexToken<L::Kind>>,
   language: L,
-  buf: &'a str,
+  buf: String,
   position: Pos,
   off: usize,
-  next_state: Option<(usize, Token<'a, L::Kind>, usize, Pos)>,
+  next_state: Option<(usize, Token<L::Kind>, usize, Pos)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -75,37 +75,41 @@ pub struct Checkpoint {
   off: usize,
 }
 
-impl<'a, L: Language> StreamOnce for TokenStream<'a, L> {
-  type Item = Token<'a, L::Kind>;
-  type Range = Token<'a, L::Kind>;
+impl<L: Language> StreamOnce for TokenStream<L> {
+  type Item = Token<L::Kind>;
+  type Range = Token<L::Kind>;
   type Position = Pos;
-  type Error = Errors<Token<'a, L::Kind>, Token<'a, L::Kind>, Pos>;
+  type Error = Errors<Token<L::Kind>, Token<L::Kind>, Pos>;
 
-  fn uncons(&mut self) -> Result<Self::Item, Error<Token<'a, L::Kind>, Token<'a, L::Kind>>> {
-    if let Some((at, tok, off, pos)) = self.next_state {
-      if at == self.off {
-        self.off = off;
-        self.position = pos;
-        return Ok(tok);
+  fn uncons(&mut self) -> Result<Self::Item, Error<Token<L::Kind>, Token<L::Kind>>> {
+    if let Some((at, tok, off, pos)) = &self.next_state {
+      if *at == self.off {
+        self.off = *off;
+        self.position = pos.clone();
+        return Ok(tok.clone());
       }
     }
     let old_pos = self.off;
     let (kind, len) = self.peek_token()?;
-    let value = &self.buf[self.off - len..self.off];
+    // TODO :: this is probably super slow. Need a String type that can handle removing the front of it.
+    // or go back to being zero-copy :eyes:. But that makes the lifetimes wicked complicated
+    let remainder = self.buf.split_off(len);
+
+    let value = std::mem::replace(&mut self.buf, remainder);
     self.skip_whitespace();
     let token = Token { kind, value };
-    self.next_state = Some((old_pos, token, self.off, self.position));
+    self.next_state = Some((old_pos, token.clone(), self.off, self.position));
     Ok(token)
   }
 }
 
-impl<'a, L: Language> Positioned for TokenStream<'a, L> {
+impl<L: Language> Positioned for TokenStream<L> {
   fn position(&self) -> Self::Position {
     self.position
   }
 }
 
-impl<'a, L: Language> Resetable for TokenStream<'a, L> {
+impl<L: Language> Resetable for TokenStream<L> {
   type Checkpoint = Checkpoint;
   fn checkpoint(&self) -> Self::Checkpoint {
     Checkpoint {
@@ -167,9 +171,9 @@ impl<T> RegexToken<T> {
   }
 }
 
-impl<'a, L: Language> TokenStream<'a, L> {
+impl<L: Language> TokenStream<L> {
   #[allow(dead_code)]
-  pub fn new(lang: L, s: &'a str) -> TokenStream<'a, L> {
+  pub fn new(lang: L, s: String) -> TokenStream<L> {
     let mut me = TokenStream {
       keywords: L::keywords(),
       punctuation: L::punctuation(),
@@ -226,7 +230,7 @@ impl<'a, L: Language> TokenStream<'a, L> {
   }
 
   /// Get the current string of the TokenStream
-  pub fn get_str(&'a self) -> &'a str {
+  pub fn get_str(&self) -> &str {
     &self.buf[self.off..]
   }
 
@@ -267,9 +271,7 @@ impl<'a, L: Language> TokenStream<'a, L> {
     None
   }
 
-  fn peek_token(
-    &mut self,
-  ) -> Result<(L::Kind, usize), Error<Token<'a, L::Kind>, Token<'a, L::Kind>>> {
+  fn peek_token(&mut self) -> Result<(L::Kind, usize), Error<Token<L::Kind>, Token<L::Kind>>> {
     let mut iter = self.buf[self.off..].char_indices();
     /*
      * Eagerly handle EOF.
@@ -368,7 +370,7 @@ impl<'a, L: Language> TokenStream<'a, L> {
   }
 }
 
-impl<'a, K: PartialEq + Debug> fmt::Display for Token<'a, K> {
+impl<K: PartialEq + Debug> fmt::Display for Token<K> {
   fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
     write!(f, "{}[{:?}]", self.value, self.kind)
   }
@@ -441,9 +443,9 @@ mod tests {
       return Some(len);
     }
   }
-  fn tok_str(s: &str) -> Vec<&str> {
+  fn tok_str(s: &str) -> Vec<String> {
     let mut r = Vec::new();
-    let mut s = TokenStream::new(Simple {}, s);
+    let mut s = TokenStream::new(Simple {}, s.to_string());
     loop {
       match s.uncons() {
         Ok(x) => r.push(x.value),
@@ -455,7 +457,7 @@ mod tests {
   }
   fn tok_typ(s: &str) -> Vec<Kind> {
     let mut r = Vec::new();
-    let mut s = TokenStream::new(Simple {}, s);
+    let mut s = TokenStream::new(Simple {}, s.to_string());
     loop {
       match s.uncons() {
         Ok(x) => r.push(x.kind),

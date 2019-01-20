@@ -95,9 +95,9 @@ mod tests {
   use combine::easy::Error;
   use combine::{Positioned, StreamOnce};
 
-  fn tok_str(s: &str) -> Vec<&str> {
+  fn tok_str(s: &str) -> Vec<String> {
     let mut r = Vec::new();
-    let mut s = TokenStream::new(Sql(()), s);
+    let mut s = TokenStream::new(Sql(()), s.to_string());
     loop {
       match s.uncons() {
         Ok(x) => r.push(x.value),
@@ -109,7 +109,7 @@ mod tests {
   }
   fn tok_typ(s: &str) -> Vec<Kind> {
     let mut r = Vec::new();
-    let mut s = TokenStream::new(Sql(()), s);
+    let mut s = TokenStream::new(Sql(()), s.to_string());
     loop {
       match s.uncons() {
         Ok(x) => r.push(x.kind),

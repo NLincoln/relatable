@@ -1,0 +1,5 @@
+# wrap_comments = true
+# condense_wildcard_suffixes = true
+# merge_imports = true
+# reorder_impl_items = true
+tab_spaces = 2

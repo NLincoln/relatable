@@ -177,7 +177,7 @@ impl<'a> From<RowCell<'a>> for OwnedRowCell {
 }
 
 impl OwnedRowCell {
-  pub fn from_ast_expr<'a>(ast: &parser::Expr<'a>) -> Option<OwnedRowCell> {
+  pub fn from_ast_expr(ast: &parser::Expr) -> Option<OwnedRowCell> {
     use parser::{Expr, LiteralValue};
     let literal = match ast {
       Expr::ColumnIdent(_) => return None,
@@ -192,10 +192,7 @@ impl OwnedRowCell {
         max_size: value.len() as u64,
         value: value.to_string(),
       }),
-      LiteralValue::BlobLiteral(value) => match hex::decode(value.as_bytes()) {
-        Ok(buf) => Some(OwnedRowCell::Blob(buf)),
-        Err(_) => None,
-      },
+      LiteralValue::BlobLiteral(value) => Some(OwnedRowCell::Blob(value.clone())),
     }
   }
   pub fn coerce_to(mut self, field: &impl Field) -> Option<OwnedRowCell> {
