@@ -231,6 +231,12 @@ pub struct TableField {
 }
 
 impl TableField {
+  pub fn name(&self) -> Option<&str> {
+    match &self.name {
+      Some(name) => Some(name.as_str()),
+      None => None,
+    }
+  }
   pub fn new(
     name: Option<String>,
     kind: FieldKind,

@@ -10,3 +10,6 @@ schema = { path = "../schema" }
 log = "0.4"
 env_logger = "0.6"
 parser = { path = "../parser" }
+[dependencies.prettytable]
+version = "0.8"
+package = "prettytable-rs"

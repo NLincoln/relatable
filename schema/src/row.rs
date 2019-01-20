@@ -340,3 +340,15 @@ impl<'a> RowCell<'a> {
     }
   }
 }
+
+use std::fmt::{self, Display};
+
+impl<'a> Display for RowCell<'a> {
+  fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    match self {
+      RowCell::Blob(data) => write!(f, "{}", hex::encode(data)),
+      RowCell::Str { value, .. } => write!(f, "{}", value),
+      RowCell::Number { value, .. } => write!(f, "{}", value),
+    }
+  }
+}

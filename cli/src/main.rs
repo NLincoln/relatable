@@ -38,11 +38,39 @@ fn main() -> Result<(), schema::SchemaError> {
     }
 
     let query = fs::read_to_string(&args[3])?;
-    database
-      .execute_query(&query, |row| {
-        println!("{:?}", row);
-      })
-      .unwrap();
+    let query = parser::process_query(&query).expect("Invalid SQL");
+
+    for statement in query.into_iter() {
+      let mut table = prettytable::Table::new();
+      match database.process_statement(&statement).unwrap() {
+        Some(mut result_iter) => {
+          let schema = result_iter.schema();
+
+          {
+            let schema = result_iter.schema();
+            let mut cells = vec![];
+            for field in schema.iter() {
+              match field.name() {
+                Some(name) => cells.push(prettytable::Cell::new(name)),
+                None => cells.push(prettytable::Cell::new("<unnamed>")),
+              };
+            }
+            table.add_row(prettytable::Row::new(cells));
+          };
+          while let Some(row) = result_iter.next_row(&mut database).unwrap() {
+            let row = row.into_cells(&schema).unwrap();
+            table.add_row(prettytable::Row::new(
+              row
+                .into_iter()
+                .map(|cell| prettytable::Cell::new(&format!("{}", cell.as_rowcell())))
+                .collect(),
+            ));
+          }
+          table.printstd();
+        }
+        None => {}
+      }
+    }
   } else if op == "repl" {
     loop {
       print!("> ");

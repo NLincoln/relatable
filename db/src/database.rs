@@ -161,8 +161,8 @@ impl<T: Disk> Database<T> {
     }
     Ok(())
   }
-  pub fn process_statement<'a, 'disk>(
-    &'disk mut self,
+  pub fn process_statement<'a>(
+    &mut self,
     ast: &parser::Statement<'a>,
   ) -> Result<Option<Box<dyn Table>>, DatabaseError> {
     use parser::Statement;
