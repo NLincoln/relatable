@@ -93,9 +93,9 @@ impl<L: Language> StreamOnce for TokenStream<L> {
     let (kind, len) = self.peek_token()?;
     // TODO :: this is probably super slow. Need a String type that can handle removing the front of it.
     // or go back to being zero-copy :eyes:. But that makes the lifetimes wicked complicated
-    let remainder = self.buf.split_off(len);
+    let value = &self.buf[self.off - len..self.off];
+    let value = value.to_string();
 
-    let value = std::mem::replace(&mut self.buf, remainder);
     self.skip_whitespace();
     let token = Token { kind, value };
     self.next_state = Some((old_pos, token.clone(), self.off, self.position));

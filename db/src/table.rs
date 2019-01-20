@@ -10,6 +10,8 @@ pub trait RowReader {
 }
 
 pub trait Table {
+  /// reset the iterator for this reader
+  fn reset(&mut self);
   fn schema(&self) -> Vec<TableField>;
   fn next_row(&mut self, disk: &mut dyn RowReader) -> Result<Option<Row>, TableError>;
   fn map_schema(
@@ -49,6 +51,9 @@ impl SchemaReader {
 }
 
 impl Table for SchemaReader {
+  fn reset(&mut self) {
+    self.current_row = 0;
+  }
   fn schema(&self) -> Vec<TableField> {
     let table_name = self.schema.schema().name();
     self
@@ -80,36 +85,31 @@ impl Table for SchemaReader {
   }
 }
 
-pub struct MultiTableIterator<A: Table, B: Table> {
-  tables: (A, B),
+pub struct MultiTableIterator<T: Table> {
+  tables: Vec<T>,
 }
 
-impl<A: Table, B: Table> Table for MultiTableIterator<A, B> {
+impl<T: Table> MultiTableIterator<T> {
+  pub fn new(tables: Vec<T>) -> MultiTableIterator<T> {
+    MultiTableIterator { tables }
+  }
+}
+
+impl<T: Table> Table for MultiTableIterator<T> {
+  fn reset(&mut self) {
+    for table in self.tables.iter_mut() {
+      table.reset();
+    }
+  }
   fn schema(&self) -> Vec<TableField> {
     let mut buf = vec![];
-    buf.append(&mut self.tables.0.schema());
-    buf.append(&mut self.tables.1.schema());
+    for table in self.tables.iter() {
+      buf.append(&mut table.schema());
+    }
     buf
   }
   fn next_row(&mut self, disk: &mut dyn RowReader) -> Result<Option<Row>, TableError> {
-    let row_a = self.tables.0.next_row(disk)?;
-    let row_b = self.tables.1.next_row(disk)?;
-    let row_a = match row_a {
-      Some(row) => row,
-      None => return Ok(None),
-    };
-    let row_b = match row_b {
-      Some(row) => row,
-      None => return Ok(None),
-    };
-
-    let mut row_a = row_a.into_data();
-    let mut row_b = row_b.into_data();
-    let mut buf = vec![];
-    buf.append(&mut row_a);
-    buf.append(&mut row_b);
-
-    Ok(Some(Row::from_data(buf)))
+    unimplemented!()
   }
 }
 
@@ -177,6 +177,12 @@ impl<I> Table for MapSchema<I>
 where
   I: Table,
 {
+  fn reset(&mut self) {
+    self.iter.reset();
+  }
+  fn schema(&self) -> Vec<TableField> {
+    self.schema.to_vec()
+  }
   fn next_row(&mut self, disk: &mut dyn RowReader) -> Result<Option<Row>, TableError> {
     let row = self.iter.next_row(disk)?;
     let row = match row {
@@ -219,9 +225,6 @@ where
       };
     }
     Ok(Some(Row::from_cells(next_row)?))
-  }
-  fn schema(&self) -> Vec<TableField> {
-    self.schema.to_vec()
   }
 }
 

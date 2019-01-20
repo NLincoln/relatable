@@ -270,7 +270,7 @@ fn blob_literal() -> impl Parser<Input = TokenStream, Output = Vec<u8>> {
 
 #[test]
 fn test_blob_literal() {
-  assert_ast(blob_literal(), "x'abc'", "abc".to_string().into_bytes())
+  assert_ast(blob_literal(), "x'abcd'", vec![171, 205])
 }
 
 fn ident() -> impl Parser<Input = TokenStream, Output = Ident> {

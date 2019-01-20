@@ -38,11 +38,11 @@ fn main() -> Result<(), schema::SchemaError> {
     }
 
     let query = fs::read_to_string(&args[3])?;
-    let query = parser::process_query(&query).expect("Invalid SQL");
+    let query = parser::process_query(query).expect("Invalid SQL");
 
     for statement in query.into_iter() {
       let mut table = prettytable::Table::new();
-      match database.process_statement(&statement).unwrap() {
+      match database.process_statement(statement).unwrap() {
         Some(mut result_iter) => {
           let schema = result_iter.schema();
 
@@ -51,7 +51,7 @@ fn main() -> Result<(), schema::SchemaError> {
             let mut cells = vec![];
             for field in schema.iter() {
               match field.name() {
-                Some(name) => cells.push(prettytable::Cell::new(name)),
+                Some(name) => cells.push(prettytable::Cell::new(&name.to_string())),
                 None => cells.push(prettytable::Cell::new("<unnamed>")),
               };
             }
@@ -84,7 +84,7 @@ fn main() -> Result<(), schema::SchemaError> {
         break;
       }
 
-      match database.execute_query(&query, |row| {
+      match database.execute_query(query, |row| {
         println!("{:?}", row);
       }) {
         Ok(result) => println!("{:?}", result),

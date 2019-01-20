@@ -1,7 +1,10 @@
+use crate::table::TableField;
 use crate::table::{Table, TableError};
 use crate::{Block, BlockDisk};
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use log::debug;
+use parser::ColumnIdent;
+use parser::{Expr, ResultColumn};
 use schema::{OnDiskSchema, Row, Schema};
 use std::collections::BTreeMap;
 use std::io::{self, Read, Seek, Write};
@@ -142,7 +145,7 @@ impl<T: Disk> Database<T> {
   {
     let ast = parser::process_query(query)?;
     for statement in ast.into_iter() {
-      match self.process_statement(&statement)? {
+      match self.process_statement(statement)? {
         Some(mut result_iter) => {
           let schema = result_iter.schema();
           while let Some(row) = result_iter
@@ -159,7 +162,7 @@ impl<T: Disk> Database<T> {
   }
   pub fn process_statement(
     &mut self,
-    ast: &parser::Statement,
+    ast: parser::Statement,
   ) -> Result<Option<Box<dyn Table>>, DatabaseError> {
     use parser::Statement;
     match ast {
@@ -227,7 +230,7 @@ impl<T: Disk> Database<T> {
 
   fn transform_literal_value_to_field(
     literal_value: &parser::LiteralValue,
-    alias: Option<parser::Ident>,
+    alias: Option<&parser::Ident>,
   ) -> crate::table::TableField {
     use crate::table::TableField;
     use crate::table::TableFieldLiteral;
@@ -235,7 +238,7 @@ impl<T: Disk> Database<T> {
     use schema::FieldKind;
 
     let alias = alias.map(|alias| parser::ColumnIdent {
-      name: alias,
+      name: alias.clone(),
       table: None,
     });
     match literal_value {
@@ -257,78 +260,90 @@ impl<T: Disk> Database<T> {
       ),
     }
   }
-  fn create_schema_mapping_for_select_statement(
+  fn create_schema_mapping_for_select_statement<'alias>(
     &mut self,
-    columns: &[parser::ResultColumn],
-    tables: &[parser::Ident],
-  ) -> Result<
-    (
-      Vec<crate::table::TableField>,
-      BTreeMap<parser::ColumnIdent, &str>,
-    ),
-    DatabaseError,
-  > {
-    unimplemented!()
+    columns: &'alias [parser::ResultColumn],
+    table: &OnDiskSchema,
+    next_schema: &mut Vec<TableField>,
+    alias_mapping: &mut BTreeMap<ColumnIdent, &'alias str>,
+  ) -> Result<(), DatabaseError> {
+    for column in columns.iter() {
+      match column {
+        ResultColumn::Asterisk => {
+          for field in table.schema().fields().iter() {
+            next_schema.push(TableField::new(
+              Some(ColumnIdent {
+                name: field.name().to_string().into(),
+                table: Some(table.schema().name().to_string().into()),
+              }),
+              field.kind().clone(),
+              None,
+            ));
+          }
+        }
+        ResultColumn::TableAsterisk(_table) => unimplemented!(),
+        ResultColumn::Expr { value, alias } => match value {
+          Expr::ColumnIdent(column_ident) => {
+            let schema_column =
+              table
+                .schema()
+                .field(column_ident.name.text())
+                .ok_or(DatabaseError::Other(format!(
+                  "Error: Could not find column {} in table",
+                  column_ident.name
+                )))?;
+            if let Some(alias) = alias {
+              alias_mapping.insert(column_ident.clone(), alias.text());
+            }
+
+            next_schema.push(TableField::new(
+              Some(
+                alias
+                  .clone()
+                  .map(|alias| ColumnIdent {
+                    name: alias,
+                    table: None,
+                  })
+                  .unwrap_or(column_ident.clone()),
+              ),
+              schema_column.kind().clone(),
+              None,
+            ));
+          }
+          Expr::LiteralValue(literal_value) => {
+            next_schema.push(Self::transform_literal_value_to_field(
+              literal_value,
+              alias.as_ref(),
+            ));
+          }
+        },
+      };
+    }
+    Ok(())
   }
 
   fn read_select_statement(
     &mut self,
-    select_statement: &parser::SelectStatement,
+    select_statement: parser::SelectStatement,
   ) -> Result<Box<dyn Table>, DatabaseError> {
-    match &select_statement.tables {
+    match select_statement.tables {
       Some(tables) => {
-        use crate::table::TableField;
-        use parser::{Expr, ResultColumn};
-
-        let table = self.get_table(table.text())?;
+        use crate::table::{MultiTableIterator, SchemaReader};
         let mut next_schema = vec![];
-        let mut alias_mapping: BTreeMap<&str, &str> = BTreeMap::new();
-        for column in select_statement.columns.iter() {
-          match column {
-            ResultColumn::Asterisk => {
-              for field in table.schema().fields().iter() {
-                next_schema.push(TableField::new(
-                  Some(field.name().to_string()),
-                  field.kind().clone(),
-                  None,
-                ))
-              }
-            }
-            ResultColumn::TableAsterisk(_table) => unimplemented!(),
-            ResultColumn::Expr { value, alias } => {
-              match value {
-                Expr::ColumnIdent(column_ident) => {
-                  let schema_column = table.schema().field(column_ident.column.text()).ok_or(
-                    DatabaseError::Other(format!(
-                      "Error: Could not find column {} in table",
-                      column_ident.column
-                    )),
-                  )?;
-                  if let Some(alias) = alias {
-                    alias_mapping.insert(column_ident.column.text(), alias.text());
-                  }
-
-                  next_schema.push(TableField::new(
-                    Some(
-                      alias
-                        .as_ref()
-                        .map(|alias| alias.text())
-                        .unwrap_or(column_ident.column.text())
-                        .to_string(),
-                    ),
-                    schema_column.kind().clone(),
-                    None,
-                  ))
-                }
-                Expr::LiteralValue(literal_value) => {
-                  next_schema.push(Self::transform_literal_value_to_field(literal_value, alias));
-                }
-              }
-            }
-          }
+        let mut alias_mapping = BTreeMap::new();
+        let mut table_readers = vec![];
+        for table in tables.into_iter() {
+          let table = self.get_table(table.text())?;
+          self.create_schema_mapping_for_select_statement(
+            &select_statement.columns,
+            &table,
+            &mut next_schema,
+            &mut alias_mapping,
+          )?;
+          table_readers.push(SchemaReader::new(table));
         }
 
-        let iter = crate::table::SchemaReader::new(table);
+        let iter = MultiTableIterator::new(table_readers);
 
         let iter = iter.map_schema(next_schema, alias_mapping);
 
