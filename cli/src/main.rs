@@ -1,4 +1,4 @@
-use db::{Database, DatabaseQueryError};
+use db::Database;
 use std::{
   env, fs,
   io::{self, Write},

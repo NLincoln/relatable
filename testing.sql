@@ -6,4 +6,4 @@ create table users (
 insert into users (id, username) VALUE (1, 'nlincoln');
 insert into users (id, username) VALUE (2, 'other');
 
-select id, username, 3 from users;
+select id, username from users;

@@ -226,10 +226,6 @@ impl<T: Disk> Database<T> {
         }
       }
       Statement::Select(select_statement) => {
-        // I'm just going to go ahead and say that nothing except the barest
-        // select * from table queries are allowed. Too much complexity for right here.
-        // I think next I'll work on a Table abstraction
-
         match &select_statement.table {
           Some(table) => {
             use crate::table::TableField;
@@ -238,6 +234,7 @@ impl<T: Disk> Database<T> {
             use schema::FieldKind;
             let table = self.get_table(table.text())?;
             let mut next_schema = vec![];
+            let mut alias_mapping: BTreeMap<&str, &str> = BTreeMap::new();
             for column in select_statement.columns.iter() {
               match column {
                 ResultColumn::Asterisk => {
@@ -249,7 +246,7 @@ impl<T: Disk> Database<T> {
                     ))
                   }
                 }
-                ResultColumn::TableAsterisk(table) => unimplemented!(),
+                ResultColumn::TableAsterisk(_table) => unimplemented!(),
                 ResultColumn::Expr { value, alias } => match value {
                   Expr::ColumnIdent(column_ident) => {
                     let schema_column = table.schema().field(column_ident.column.text()).ok_or(
@@ -258,6 +255,9 @@ impl<T: Disk> Database<T> {
                         column_ident.column
                       )),
                     )?;
+                    if let Some(alias) = alias {
+                      alias_mapping.insert(column_ident.column.text(), alias.text());
+                    }
 
                     next_schema.push(TableField::new(
                       Some(
@@ -299,7 +299,7 @@ impl<T: Disk> Database<T> {
 
             let iter = crate::table::SchemaReader::new(table);
 
-            let iter = iter.map_schema(next_schema);
+            let iter = iter.map_schema(next_schema, alias_mapping);
 
             Ok(Some(Box::new(iter)))
           }

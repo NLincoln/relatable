@@ -1,5 +1,3 @@
-use crate::database::Disk;
-use crate::Database;
 use schema::{
   Field, FieldKind, OnDiskSchema, OwnedRowCell, Row, RowCell, RowCellError, SchemaField,
 };
@@ -12,11 +10,15 @@ pub trait RowReader {
 pub trait Table {
   fn schema(&self) -> Vec<TableField>;
   fn next_row(&mut self, disk: &mut dyn RowReader) -> Result<Option<Row>, TableError>;
-  fn map_schema(self, next_schema: Vec<TableField>) -> MapSchema<Self>
+  fn map_schema(
+    self,
+    next_schema: Vec<TableField>,
+    alias_mapping: BTreeMap<&str, &str>,
+  ) -> MapSchema<Self>
   where
     Self: Sized,
   {
-    MapSchema::new(self.schema(), next_schema, self)
+    MapSchema::new(self.schema(), next_schema, alias_mapping, self)
   }
   fn into_iter_cells<'a>(self, disk: &'a mut dyn RowReader) -> IntoIterCells<'a, Self>
   where
@@ -124,14 +126,25 @@ pub struct MapSchema<I> {
 }
 
 impl<I: Table> MapSchema<I> {
-  fn new(prev_schema: Vec<TableField>, schema: Vec<TableField>, iter: I) -> Self {
+  fn new(
+    prev_schema: Vec<TableField>,
+    schema: Vec<TableField>,
+    alias_mapping: BTreeMap<&str, &str>,
+    iter: I,
+  ) -> Self {
     let prev_schema_lookup = {
       let mut table: BTreeMap<String, (TableField, usize)> = BTreeMap::default();
       let mut offset = 0;
       for column in prev_schema.into_iter() {
         let size = column.kind().size();
+        // ok so alias_mapping goes original_column -> alias_name
+        // prev_schema is the actual, physical table itself.
         if let Some(name) = &column.name {
-          table.insert(name.clone(), (column, offset));
+          let real_name = alias_mapping
+            .get(name.as_str())
+            .map(|string| string.to_string())
+            .unwrap_or_else(|| name.clone());
+          table.insert(real_name, (column, offset));
         }
         offset += size;
       }
