@@ -11,5 +11,3 @@ run() {
 
 run create
 run run-file testing.sql
-
-xxd $filename

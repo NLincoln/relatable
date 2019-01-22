@@ -284,6 +284,7 @@ impl<T: Disk> Database<T> {
         ResultColumn::TableAsterisk(_table) => unimplemented!(),
         ResultColumn::Expr { value, alias } => match value {
           Expr::ColumnIdent(column_ident) => {
+            use parser::Ident;
             let schema_column =
               table
                 .schema()
@@ -292,8 +293,18 @@ impl<T: Disk> Database<T> {
                   "Error: Could not find column {} in table",
                   column_ident.name
                 )))?;
+
+            let table_column_ident = ColumnIdent {
+              name: column_ident.name.clone(),
+              table: Some(
+                column_ident
+                  .table
+                  .clone()
+                  .unwrap_or(Ident::new(table.schema().name().to_string())),
+              ),
+            };
             if let Some(alias) = alias {
-              alias_mapping.insert(column_ident.clone(), alias.text());
+              alias_mapping.insert(table_column_ident.clone(), alias.text());
             }
 
             next_schema.push(TableField::new(
@@ -304,7 +315,7 @@ impl<T: Disk> Database<T> {
                     name: alias,
                     table: None,
                   })
-                  .unwrap_or(column_ident.clone()),
+                  .unwrap_or(table_column_ident.clone()),
               ),
               schema_column.kind().clone(),
               None,
