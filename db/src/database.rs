@@ -148,10 +148,12 @@ impl<T: Disk> Database<T> {
       match self.process_statement(statement)? {
         Some(mut result_iter) => {
           let schema = result_iter.schema();
-          while let Some(row) = result_iter
-            .next_row(self)
-            .map_err(DatabaseError::TableError)?
-          {
+          let mut get_next_row = || {
+            let res = result_iter.current_row(self);
+            result_iter.next_row(self)?;
+            res
+          };
+          while let Some(row) = get_next_row().map_err(DatabaseError::TableError)? {
             (f)(Some(row.into_cells(&schema).map_err(DatabaseError::from)?))
           }
         }
@@ -353,12 +355,15 @@ impl<T: Disk> Database<T> {
           )?;
           table_readers.push(SchemaReader::new(table));
         }
+        let first_table = table_readers.remove(0);
 
-        let iter = MultiTableIterator::new(table_readers);
+        let iter: Box<dyn Table> = table_readers
+          .into_iter()
+          .fold(Box::new(first_table), |a, b| {
+            Box::new(MultiTableIterator::new(a, Box::new(b)))
+          });
 
-        let iter = iter.map_schema(next_schema, alias_mapping);
-
-        Ok(Box::new(iter))
+        Ok(iter)
       }
       None => unimplemented!(),
     }

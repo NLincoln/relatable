@@ -33,7 +33,7 @@ fn main() -> Result<(), schema::SchemaError> {
   let mut database = Database::from_disk(file)?;
 
   if op == "run-file" {
-    if args.len() < 4 {
+    if args.len() < 3 {
       panic!("Need the name of the sql file to read as the last arg");
     }
 
@@ -57,7 +57,13 @@ fn main() -> Result<(), schema::SchemaError> {
             }
             table.add_row(prettytable::Row::new(cells));
           };
-          while let Some(row) = result_iter.next_row(&mut database).unwrap() {
+          let mut get_next_row = || {
+            let res = result_iter.current_row(&mut database);
+            result_iter.next_row(&mut database)?;
+            res
+          };
+
+          while let Some(row) = get_next_row().unwrap() {
             let row = row.into_cells(&schema).unwrap();
             table.add_row(prettytable::Row::new(
               row
@@ -95,7 +101,7 @@ fn main() -> Result<(), schema::SchemaError> {
     let schema = database.schema().unwrap();
     println!("Current Schema");
 
-    println!("{:?}", schema);
+    println!("{:#?}", schema);
   } else if op == "dbmeta" {
     println!("{:?}", database);
   }

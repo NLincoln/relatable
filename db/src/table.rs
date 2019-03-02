@@ -13,7 +13,7 @@ pub trait Table {
   /// reset the iterator for this reader
   fn reset(&mut self);
   fn schema(&self) -> Vec<TableField>;
-  fn next_row(&mut self, disk: &mut dyn RowReader) -> Result<Option<Row>, TableError>;
+  fn next_row(&mut self, disk: &mut dyn RowReader) -> Result<(), TableError>;
   fn current_row(&self, disk: &mut dyn RowReader) -> Result<Option<Row>, TableError>;
 
   fn map_schema(
@@ -82,78 +82,72 @@ impl Table for SchemaReader {
       None => Ok(None),
     }
   }
-  fn next_row(&mut self, disk: &mut dyn RowReader) -> Result<Option<Row>, TableError> {
+  fn next_row(&mut self, disk: &mut dyn RowReader) -> Result<(), TableError> {
     match self.current_row(disk)? {
       row @ Some(_) => {
         self.current_row += 1;
-        Ok(row)
       }
-      None => Ok(None),
-    }
+      None => {}
+    };
+    Ok(())
+  }
+}
+type TableBox = Box<dyn Table>;
+
+pub struct MultiTableIterator {
+  a: TableBox,
+  b: TableBox,
+}
+
+impl MultiTableIterator {
+  pub fn new(a: TableBox, b: TableBox) -> MultiTableIterator {
+    MultiTableIterator { a, b }
   }
 }
 
-pub struct MultiTableIterator<T: Table> {
-  tables: Vec<T>,
-}
-
-impl<T: Table> MultiTableIterator<T> {
-  pub fn new(tables: Vec<T>) -> MultiTableIterator<T> {
-    MultiTableIterator { tables }
-  }
-}
-
-impl<T: Table> Table for MultiTableIterator<T> {
+impl Table for MultiTableIterator {
   fn reset(&mut self) {
-    for table in self.tables.iter_mut() {
-      table.reset();
-    }
+    self.a.reset();
+    self.b.reset();
   }
   fn schema(&self) -> Vec<TableField> {
     let mut buf = vec![];
-    for table in self.tables.iter() {
-      buf.append(&mut table.schema());
-    }
+    buf.append(&mut self.a.schema());
+    buf.append(&mut self.b.schema());
     buf
   }
   fn current_row(&self, disk: &mut dyn RowReader) -> Result<Option<Row>, TableError> {
-    unimplemented!()
+    let a_row = self.a.current_row(disk)?;
+    let b_row = self.b.current_row(disk)?;
+    match (a_row, b_row) {
+      (None, None) => Ok(None),
+      (Some(a), Some(b)) => {
+        let mut a = a.into_data();
+        a.append(&mut b.into_data());
+        Ok(Some(Row::from_data(a)))
+      }
+      _ => unreachable!(),
+    }
   }
-  fn next_row(&mut self, disk: &mut dyn RowReader) -> Result<Option<Row>, TableError> {
-    let mut buf = vec![];
-    let mut has_seen_some = false;
-    let mut current_table_index = 0usize;
-    let mut num_tables = self.tables.len();
-    match self.tables[current_table_index].next_row(disk)? {
-      Some(data) => {
-        has_seen_some = true;
-        buf.append(&mut data.into_data());
-      }
-      None => {
-        /*
-         * Aight here's where it starts to get really complicated.
-         * We _know_ that our current table is out of data.
-         * If our current table is out of data, then _every_ previous
-         * table _must_ be out of data as well. They all need to be reset.
-         */
-      }
-    }
-    for table in self.tables.iter_mut() {
-      match table.next_row(disk)? {
-        Some(data) => {
-          has_seen_some = true;
-          buf.append(&mut data.into_data());
+  fn next_row(&mut self, disk: &mut dyn RowReader) -> Result<(), TableError> {
+    self.a.next_row(disk)?;
+
+    match self.a.current_row(disk)? {
+      None => match self.b.current_row(disk)? {
+        None => {}
+        Some(_) => {
+          self.b.next_row(disk)?;
+          match self.b.current_row(disk)? {
+            None => {}
+            Some(_) => {
+              self.a.reset();
+            }
+          }
         }
-        None => {
-          table.reset();
-          buf.append(&mut table.next_row(disk)?.unwrap().into_data());
-        }
-      }
-    }
-    if !has_seen_some {
-      return Ok(None);
-    }
-    Ok(Some(Row::from_data(buf)))
+      },
+      Some(_) => {}
+    };
+    Ok(())
   }
 }
 
@@ -167,7 +161,7 @@ impl<'a, I: Table> Iterator for IntoIterCells<'a, I> {
   type Item = Result<Vec<OwnedRowCell>, TableError>;
   fn next(&mut self) -> Option<Self::Item> {
     let next = self.iter.next_row(self.d);
-    match next {
+    match self.iter.current_row(self.d) {
       Ok(None) => None,
       Ok(Some(row)) => Some(row.into_cells(&self.schema).map_err(TableError::RowCell)),
       Err(err) => Some(Err(err)),
@@ -228,7 +222,7 @@ where
     self.schema.to_vec()
   }
   fn current_row(&self, disk: &mut dyn RowReader) -> Result<Option<Row>, TableError> {
-    let row = self.iter.next_row(disk)?;
+    let row = self.iter.current_row(disk)?;
     let row = match row {
       Some(row) => row,
       None => return Ok(None),
@@ -270,9 +264,9 @@ where
     }
     Ok(Some(Row::from_cells(next_row)?))
   }
-  fn next_row(&mut self, disk: &mut dyn RowReader) -> Result<Option<Row>, TableError> {
+  fn next_row(&mut self, disk: &mut dyn RowReader) -> Result<(), TableError> {
     self.iter.next_row(disk)?;
-    self.current_row(disk)
+    Ok(())
   }
 }
 
