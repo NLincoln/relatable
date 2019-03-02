@@ -265,36 +265,43 @@ impl<T: Disk> Database<T> {
   fn create_schema_mapping_for_select_statement<'alias>(
     &mut self,
     columns: &'alias [parser::ResultColumn],
-    table: &OnDiskSchema,
-    next_schema: &mut Vec<TableField>,
-    alias_mapping: &mut BTreeMap<ColumnIdent, &'alias str>,
-  ) -> Result<(), DatabaseError> {
+    tables: &[OnDiskSchema],
+  ) -> Result<(Vec<TableField>, BTreeMap<ColumnIdent, &'alias str>), DatabaseError> {
+    let mut alias_mapping = BTreeMap::new();
+    let mut next_schema = Vec::new();
     for column in columns.iter() {
       match column {
         ResultColumn::Asterisk => {
-          for field in table.schema().fields().iter() {
-            next_schema.push(TableField::new(
-              Some(ColumnIdent {
-                name: field.name().to_string().into(),
-                table: Some(table.schema().name().to_string().into()),
-              }),
-              field.kind().clone(),
-              None,
-            ));
+          for table in tables.iter() {
+            for field in table.schema().fields().iter() {
+              next_schema.push(TableField::new(
+                Some(ColumnIdent {
+                  name: field.name().to_string().into(),
+                  table: Some(table.schema().name().to_string().into()),
+                }),
+                field.kind().clone(),
+                None,
+              ));
+            }
           }
         }
         ResultColumn::TableAsterisk(_table) => unimplemented!(),
         ResultColumn::Expr { value, alias } => match value {
           Expr::ColumnIdent(column_ident) => {
             use parser::Ident;
-            let schema_column =
-              table
-                .schema()
-                .field(column_ident.name.text())
-                .ok_or(DatabaseError::Other(format!(
-                  "Error: Could not find column {} in table",
-                  column_ident.name
-                )))?;
+
+            let (schema_column, schema_column_name) = tables
+              .iter()
+              .find_map(|table| {
+                table
+                  .schema()
+                  .field(column_ident.name.text())
+                  .map(|name| (name, table.schema().name()))
+              })
+              .ok_or(DatabaseError::Other(format!(
+                "Could not find column {}",
+                column_ident.to_string()
+              )))?;
 
             let table_column_ident = ColumnIdent {
               name: column_ident.name.clone(),
@@ -302,7 +309,7 @@ impl<T: Disk> Database<T> {
                 column_ident
                   .table
                   .clone()
-                  .unwrap_or(Ident::new(table.schema().name().to_string())),
+                  .unwrap_or(Ident::new(schema_column_name.to_string())),
               ),
             };
             if let Some(alias) = alias {
@@ -332,7 +339,7 @@ impl<T: Disk> Database<T> {
         },
       };
     }
-    Ok(())
+    Ok((next_schema, alias_mapping))
   }
 
   fn read_select_statement(
@@ -342,19 +349,15 @@ impl<T: Disk> Database<T> {
     match select_statement.tables {
       Some(tables) => {
         use crate::table::{MultiTableIterator, SchemaReader};
-        let mut next_schema = vec![];
-        let mut alias_mapping = BTreeMap::new();
         let mut table_readers = vec![];
         for table in tables.into_iter() {
           let table = self.get_table(table.text())?;
-          self.create_schema_mapping_for_select_statement(
-            &select_statement.columns,
-            &table,
-            &mut next_schema,
-            &mut alias_mapping,
-          )?;
-          table_readers.push(SchemaReader::new(table));
+          table_readers.push(table);
         }
+        let (next_schema, alias_mapping) = self
+          .create_schema_mapping_for_select_statement(&select_statement.columns, &table_readers)?;
+
+        let mut table_readers: Vec<_> = table_readers.into_iter().map(SchemaReader::new).collect();
         let first_table = table_readers.remove(0);
 
         let iter: Box<dyn Table> = table_readers
@@ -362,6 +365,9 @@ impl<T: Disk> Database<T> {
           .fold(Box::new(first_table), |a, b| {
             Box::new(MultiTableIterator::new(a, Box::new(b)))
           });
+
+        let iter: Box<dyn Table> =
+          Box::new(crate::table::map_schema(iter, next_schema, alias_mapping));
 
         Ok(iter)
       }

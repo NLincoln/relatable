@@ -16,4 +16,5 @@ insert into employees (id, username, department_id) VALUES (1, 'nlincoln', 2), (
 select * from departments;
 select id, username, department_id from employees;
 
+select departments.id, employees.id from departments, employees;
 select * from departments, employees;

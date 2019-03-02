@@ -9,6 +9,14 @@ pub trait RowReader {
   fn read_nth_row(&mut self, schema: &OnDiskSchema, index: u64) -> Result<Option<Row>, TableError>;
 }
 
+pub fn map_schema(
+  table: TableBox,
+  next_schema: Vec<TableField>,
+  alias_mapping: BTreeMap<ColumnIdent, &str>,
+) -> MapSchema {
+  MapSchema::new(table.schema(), next_schema, alias_mapping, table)
+}
+
 pub trait Table {
   /// reset the iterator for this reader
   fn reset(&mut self);
@@ -16,16 +24,6 @@ pub trait Table {
   fn next_row(&mut self, disk: &mut dyn RowReader) -> Result<(), TableError>;
   fn current_row(&self, disk: &mut dyn RowReader) -> Result<Option<Row>, TableError>;
 
-  fn map_schema(
-    self,
-    next_schema: Vec<TableField>,
-    alias_mapping: BTreeMap<ColumnIdent, &str>,
-  ) -> MapSchema<Self>
-  where
-    Self: Sized,
-  {
-    MapSchema::new(self.schema(), next_schema, alias_mapping, self)
-  }
   fn into_iter_cells<'a>(self, disk: &'a mut dyn RowReader) -> IntoIterCells<'a, Self>
   where
     Self: Sized,
@@ -169,18 +167,18 @@ impl<'a, I: Table> Iterator for IntoIterCells<'a, I> {
   }
 }
 
-pub struct MapSchema<I> {
+pub struct MapSchema {
   prev_schema_lookup: BTreeMap<ColumnIdent, (TableField, usize)>,
   schema: Vec<TableField>,
-  iter: I,
+  iter: TableBox,
 }
 
-impl<I: Table> MapSchema<I> {
+impl MapSchema {
   fn new(
     prev_schema: Vec<TableField>,
     schema: Vec<TableField>,
     alias_mapping: BTreeMap<ColumnIdent, &str>,
-    iter: I,
+    iter: TableBox,
   ) -> Self {
     let prev_schema_lookup = {
       let mut table: BTreeMap<ColumnIdent, (TableField, usize)> = BTreeMap::default();
@@ -211,10 +209,7 @@ impl<I: Table> MapSchema<I> {
   }
 }
 
-impl<I> Table for MapSchema<I>
-where
-  I: Table,
-{
+impl Table for MapSchema {
   fn reset(&mut self) {
     self.iter.reset();
   }
