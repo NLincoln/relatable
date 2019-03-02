@@ -439,8 +439,8 @@ impl<T: Disk> Database<T> {
   }
 
   #[allow(dead_code)]
-  fn read_table<'a>(
-    &'a mut self,
+  fn read_table(
+    &mut self,
     table_name: &str,
   ) -> Result<Vec<Vec<schema::OwnedRowCell>>, DatabaseError> {
     let table = self.get_table(table_name)?;
@@ -564,21 +564,31 @@ mod tests {
   fn test_adding_rows() -> Result<(), DatabaseError> {
     use schema::{FieldKind, SchemaField};
 
+    let create_table_sql = r#"
+    CREATE TABLE users (
+      id INTEGER(8),
+      username VARCHAR(20)
+    );
+    "#
+    .to_string();
+
+    let insert_row_sql = r#"
+    INSERT INTO users (id, username) VALUE (1, 'nlincoln');
+    "#
+    .to_string();
+
+    let read_table_sql = r#"
+    SELECT * FROM users;
+    "#
+    .to_string();
+
     // Disk should have two blocks: one for the dbmeta and an empty schema block
     let mut database = Database::new(io::Cursor::new(vec![]))?;
-    let schema = Schema::from_fields(
-      "users".into(),
-      vec![
-        SchemaField::new(FieldKind::Number(8), "id".into())
-          .map_err(|err| SchemaError::from(err))?,
-        SchemaField::new(FieldKind::Str(20), "username".into())
-          .map_err(|err| SchemaError::from(err))?,
-      ],
-    );
+    database.execute_query(create_table_sql, |_| ())?;
+
     use schema::OwnedRowCell;
 
     // Disk should have 3 blocks: dbmeta, schema block with one table, and a data block with one empty row
-    database.create_table(schema.clone())?;
     let rows = vec![
       OwnedRowCell::Number { value: 1, size: 8 },
       OwnedRowCell::Str {
@@ -587,14 +597,12 @@ mod tests {
       },
     ];
     let mut expected_rows = vec![];
-    for _i in 0..100 {
-      database.add_row("users", rows.clone())?;
+    for _i in 0..50 {
+      database.execute_query(insert_row_sql.clone(), |_| ())?;
       expected_rows.push(rows.clone());
 
-      let all_rows = database
-        .read_table("users")?
-        .into_iter()
-        .collect::<Vec<_>>();
+      let mut all_rows = vec![];
+      database.execute_query(read_table_sql.clone(), |row| all_rows.push(row.unwrap()))?;
 
       assert_eq!(all_rows, expected_rows);
     }
