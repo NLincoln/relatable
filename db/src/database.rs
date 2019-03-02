@@ -438,18 +438,6 @@ impl<T: Disk> Database<T> {
     Ok(())
   }
 
-  #[allow(dead_code)]
-  fn read_table(
-    &mut self,
-    table_name: &str,
-  ) -> Result<Vec<Vec<schema::OwnedRowCell>>, DatabaseError> {
-    let table = self.get_table(table_name)?;
-    let iter = crate::table::SchemaReader::new(table);
-    let iter = iter.into_iter_cells(self);
-
-    Ok(iter.collect::<Result<Vec<_>, TableError>>()?)
-  }
-
   fn create_table(&mut self, schema: Schema) -> Result<(), DatabaseError> {
     // Alright so the first thing we need to do is go find the
     // schema table and add this entry to it.
