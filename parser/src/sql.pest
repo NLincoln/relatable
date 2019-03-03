@@ -1,0 +1,5 @@
+WHITESPACE = _{ " " | "\n" }
+
+COMMENT = _{ "--" ~ ANY* ~ "\n" }
+
+

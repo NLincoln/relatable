@@ -60,6 +60,7 @@ pub enum Type {
 pub struct SelectStatement {
   pub columns: Vec<ResultColumn>,
   pub tables: Option<Vec<Ident>>,
+  pub where_clause: Option<Expr>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -97,6 +98,40 @@ impl ToString for ColumnIdent {
 pub enum Expr {
   LiteralValue(LiteralValue),
   ColumnIdent(ColumnIdent),
+  RelOp(RelOp),
+  Expr(Box<Expr>),
+}
+
+impl Expr {
+  pub fn eagerly_evaluate(&self) -> Option<LiteralValue> {
+    match self {
+      Expr::LiteralValue(value) => Some(value.clone()),
+      Expr::ColumnIdent(_) => None,
+      Expr::RelOp(RelOp { lhs, rhs, kind }) => {
+        let lhs = lhs.eagerly_evaluate()?;
+        let rhs = rhs.eagerly_evaluate()?;
+        let val = match kind {
+          RelOpKind::Equals => lhs == rhs,
+          RelOpKind::NotEquals => lhs != rhs,
+        };
+        Some(LiteralValue::BooleanLiteral(val))
+      }
+      Expr::Expr(sub_expr) => sub_expr.eagerly_evaluate(),
+    }
+  }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RelOp {
+  pub lhs: Box<Expr>,
+  pub rhs: Box<Expr>,
+  pub kind: RelOpKind,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum RelOpKind {
+  Equals,
+  NotEquals,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -104,6 +139,7 @@ pub enum LiteralValue {
   NumericLiteral(i64),
   StringLiteral(String),
   BlobLiteral(Vec<u8>),
+  BooleanLiteral(bool),
 }
 
 #[derive(Debug, Clone, PartialEq)]

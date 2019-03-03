@@ -18,3 +18,5 @@ select id, username, department_id from employees;
 
 select departments.id, employees.id from departments, employees;
 select * from departments, employees;
+
+select *, 1 = 1 from departments, employees;

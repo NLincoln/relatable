@@ -29,6 +29,7 @@ pub enum Kind {
   Select,
   From,
   As,
+  Where,
 
   Ident,
   X,
@@ -43,6 +44,8 @@ pub enum Kind {
   RightParen,
   SemiColon,
   Asterisk,
+  Equals,
+  NotEquals,
 }
 impl Language for Sql {
   type Kind = Kind;
@@ -61,6 +64,7 @@ impl Language for Sql {
       ("value", Kind::Value),
       ("select", Kind::Select),
       ("from", Kind::From),
+      ("where", Kind::Where),
     ]
     .into_iter()
     .map(|(text, kind)| Keyword::create(text, kind).set_case_sensitive(false))
@@ -74,6 +78,8 @@ impl Language for Sql {
       (")", Kind::RightParen),
       (";", Kind::SemiColon),
       ("*", Kind::Asterisk),
+      ("=", Kind::Equals),
+      ("!=", Kind::NotEquals),
     ]
     .into_iter()
     .map(|(text, kind)| Punctuation::create(text, kind))

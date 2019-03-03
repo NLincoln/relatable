@@ -292,26 +292,36 @@ pub enum TableFieldLiteral {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+pub enum TableFieldValue {
+  Ident(ColumnIdent),
+  LiteralValue(parser::LiteralValue),
+  Expr(parser::Expr),
+}
+
+/// A field in a table that does not necessarily exist in physical form.
+/// e.g. this may exist only as an intermediary value, or be an expression
+///
+/// This can also have an alias associated with it, which I'm still deciding whether
+/// that is a good idea
+#[derive(Debug, PartialEq, Clone)]
 pub struct TableField {
-  column: Option<ColumnIdent>,
   kind: FieldKind,
-  literal_value: Option<TableFieldLiteral>,
+  alias: Option<ColumnIdent>,
+  value: TableFieldValue,
 }
 
 impl TableField {
   pub fn name(&self) -> Option<&ColumnIdent> {
-    self.column.as_ref()
-  }
-  pub fn new(
-    column: Option<ColumnIdent>,
-    kind: FieldKind,
-    literal_value: Option<TableFieldLiteral>,
-  ) -> TableField {
-    TableField {
-      column,
-      kind,
-      literal_value,
+    match &self.value {
+      TableFieldValue::Ident(ident) => Some(ident),
+      _ => None,
     }
+  }
+  pub fn value(&self) -> &TableFieldValue {
+    &self.value
+  }
+  pub fn new(kind: FieldKind, value: TableFieldValue) -> TableField {
+    TableField { kind, value }
   }
 }
 

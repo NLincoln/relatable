@@ -6,7 +6,7 @@ filename=${1:-foobar}
 rm -f $filename
 cargo build
 run() {
-   cargo run $1 $filename $2
+   ./target/debug/cli $1 $filename $2
 }
 
 run create

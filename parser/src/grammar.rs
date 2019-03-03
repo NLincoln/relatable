@@ -4,7 +4,7 @@ use crate::{Kind, Sql};
 
 use combine::stream::easy::{Error, Errors, Info};
 use combine::StreamOnce;
-use combine::{satisfy, ConsumedResult, Parser};
+use combine::{parser, satisfy, ConsumedResult, Parser};
 
 use combine::error::{Consumed, Tracked};
 
@@ -88,8 +88,13 @@ fn select_statement() -> impl Parser<Input = TokenStream, Output = SelectStateme
     token(Kind::Select),
     sep_by1(result_column(), token(Kind::Comma)),
     optional((token(Kind::From), table_list()).map(|(_, tables)| tables)),
+    optional((token(Kind::Where), parser(expr)).map(|(_, where_clause)| where_clause)),
   )
-    .map(|(_, columns, tables)| SelectStatement { columns, tables })
+    .map(|(_, columns, tables, where_clause)| SelectStatement {
+      columns,
+      tables,
+      where_clause,
+    })
 }
 
 fn table_list() -> impl Parser<Input = TokenStream, Output = Vec<Ident>> {
@@ -110,7 +115,7 @@ fn result_column() -> impl Parser<Input = TokenStream, Output = ResultColumn> {
     ),
     token(Kind::Asterisk).map(|_| ResultColumn::Asterisk),
     (
-      expr(),
+      parser(expr),
       optional((optional(token(Kind::As)), ident()).map(|(_, alias)| alias)),
     )
       .map(|(value, alias)| ResultColumn::Expr { value, alias }),
@@ -153,12 +158,42 @@ fn test_column_ident() {
   );
 }
 
-fn expr() -> impl Parser<Input = TokenStream, Output = Expr> {
-  use combine::parser::choice::choice;
+fn expr(input: &mut TokenStream) -> ParseResult<Expr> {
+  use combine::parser::{choice::choice, combinator::attempt};
   choice((
-    literal_value().map(Expr::LiteralValue),
-    column_ident().map(Expr::ColumnIdent),
+    attempt(relop()).map(Expr::RelOp),
+    atom(),
+    (
+      token(Kind::LeftParen),
+      parser(expr),
+      token(Kind::RightParen),
+    )
+      .map(|(_, expr, _)| Expr::Expr(Box::new(expr))),
   ))
+  .parse_stream(input)
+}
+
+fn atom() -> impl Parser<Input = TokenStream, Output = Expr> {
+  use combine::parser::{choice::choice, combinator::attempt};
+  choice((
+    column_ident().map(Expr::ColumnIdent),
+    literal_value().map(Expr::LiteralValue),
+  ))
+}
+
+fn relop() -> impl Parser<Input = TokenStream, Output = RelOp> {
+  use combine::parser::choice::choice;
+
+  let op = choice((
+    token(Kind::Equals).map(|_| RelOpKind::Equals),
+    token(Kind::NotEquals).map(|_| RelOpKind::NotEquals),
+  ));
+
+  (atom(), op, atom()).map(|(lhs, op, rhs)| RelOp {
+    lhs: Box::new(lhs),
+    rhs: Box::new(rhs),
+    kind: op,
+  })
 }
 
 fn literal_value() -> impl Parser<Input = TokenStream, Output = LiteralValue> {
@@ -221,7 +256,7 @@ fn insert_statement_values() -> impl Parser<Input = TokenStream, Output = Insert
   let single_row = || {
     (
       token(Kind::LeftParen),
-      sep_by(expr(), token(Kind::Comma)),
+      sep_by(parser(expr), token(Kind::Comma)),
       token(Kind::RightParen),
     )
       .map(|(_, exprs, _)| exprs)

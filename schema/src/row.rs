@@ -177,24 +177,6 @@ impl<'a> From<RowCell<'a>> for OwnedRowCell {
 }
 
 impl OwnedRowCell {
-  pub fn from_ast_expr(ast: &parser::Expr) -> Option<OwnedRowCell> {
-    use parser::{Expr, LiteralValue};
-    let literal = match ast {
-      Expr::ColumnIdent(_) => return None,
-      Expr::LiteralValue(val) => val,
-    };
-    match literal {
-      LiteralValue::NumericLiteral(value) => Some(OwnedRowCell::Number {
-        value: *value,
-        size: 8,
-      }),
-      LiteralValue::StringLiteral(value) => Some(OwnedRowCell::Str {
-        max_size: value.len() as u64,
-        value: value.to_string(),
-      }),
-      LiteralValue::BlobLiteral(value) => Some(OwnedRowCell::Blob(value.clone())),
-    }
-  }
   pub fn coerce_to(mut self, field: &impl Field) -> Option<OwnedRowCell> {
     use std::cmp::{Ord, Ordering};
     match &mut self {

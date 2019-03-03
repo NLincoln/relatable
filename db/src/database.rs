@@ -5,6 +5,7 @@ use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use log::debug;
 use parser::ColumnIdent;
 use parser::{Expr, ResultColumn};
+use schema::OwnedRowCell;
 use schema::{OnDiskSchema, Row, Schema};
 use std::collections::BTreeMap;
 use std::io::{self, Read, Seek, Write};
@@ -144,6 +145,7 @@ impl<T: Disk> Database<T> {
     F: FnMut(Option<Vec<schema::OwnedRowCell>>) -> (),
   {
     let ast = parser::process_query(query)?;
+
     for statement in ast.into_iter() {
       match self.process_statement(statement)? {
         Some(mut result_iter) => {
@@ -244,6 +246,11 @@ impl<T: Disk> Database<T> {
       table: None,
     });
     match literal_value {
+      LiteralValue::BooleanLiteral(value) => TableField::new(
+        alias,
+        FieldKind::Number(1),
+        Some(TableFieldLiteral::Number(if *value { 1 } else { 0 })),
+      ),
       LiteralValue::NumericLiteral(num) => TableField::new(
         alias,
         FieldKind::Number(8),
@@ -287,6 +294,10 @@ impl<T: Disk> Database<T> {
         }
         ResultColumn::TableAsterisk(_table) => unimplemented!(),
         ResultColumn::Expr { value, alias } => match value {
+          // TODO :: Push on a lazy expression or something
+          // or just... push on the expr itself?
+          Expr::RelOp(_) => {}
+          Expr::Expr(_) => {}
           Expr::ColumnIdent(column_ident) => {
             use parser::Ident;
 
@@ -385,7 +396,7 @@ impl<T: Disk> Database<T> {
     // at least.
     let mut row = vec![];
     for i in 0..schema.fields().len() {
-      match schema::OwnedRowCell::from_ast_expr(&ast[mapping[&i]]) {
+      match ast_expr_to_owned_row_cell(&ast[mapping[&i]]) {
         Some(cell) => {
           row.push(cell);
         }
@@ -540,6 +551,26 @@ impl<T: Disk> RowReader for Database<T> {
       log::debug!("more rows to go!");
       Ok(Some(row))
     }
+  }
+}
+
+fn ast_expr_to_owned_row_cell(ast: &parser::Expr) -> Option<OwnedRowCell> {
+  use parser::{Expr, LiteralValue};
+  let literal = ast.eagerly_evaluate()?;
+  match literal {
+    LiteralValue::BooleanLiteral(value) => Some(OwnedRowCell::Number {
+      value: if value { 1 } else { 0 },
+      size: 1,
+    }),
+    LiteralValue::NumericLiteral(value) => Some(OwnedRowCell::Number {
+      value: value,
+      size: 8,
+    }),
+    LiteralValue::StringLiteral(value) => Some(OwnedRowCell::Str {
+      max_size: value.len() as u64,
+      value: value.to_string(),
+    }),
+    LiteralValue::BlobLiteral(value) => Some(OwnedRowCell::Blob(value.clone())),
   }
 }
 
