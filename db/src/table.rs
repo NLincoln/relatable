@@ -293,7 +293,8 @@ pub enum TableFieldLiteral {
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum TableFieldValue {
-  Ident(ColumnIdent),
+  /// need to keep track of the kind of the value, since it cannot be inferred
+  Ident(ColumnIdent, FieldKind),
   LiteralValue(parser::LiteralValue),
   Expr(parser::Expr),
 }
@@ -305,8 +306,7 @@ pub enum TableFieldValue {
 /// that is a good idea
 #[derive(Debug, PartialEq, Clone)]
 pub struct TableField {
-  kind: FieldKind,
-  alias: Option<ColumnIdent>,
+  alias: Option<parser::Ident>,
   value: TableFieldValue,
 }
 
@@ -320,13 +320,7 @@ impl TableField {
   pub fn value(&self) -> &TableFieldValue {
     &self.value
   }
-  pub fn new(kind: FieldKind, value: TableFieldValue) -> TableField {
-    TableField { kind, value }
-  }
-}
-
-impl Field for TableField {
-  fn kind(&self) -> &FieldKind {
-    &self.kind
+  pub fn new(value: TableFieldValue, alias: Option<parser::Ident>) -> TableField {
+    TableField { value, alias }
   }
 }

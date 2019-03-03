@@ -20,3 +20,7 @@ select departments.id, employees.id from departments, employees;
 select * from departments, employees;
 
 select *, 1 = 1 from departments, employees;
+
+select id, id as id2, id + 1, id + 1 as idplus, 2, 2 as const from departments;
+
+
